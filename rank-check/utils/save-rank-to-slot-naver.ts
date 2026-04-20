@@ -143,6 +143,7 @@ export async function saveRankToSlotNaver(
             start_rank: slotRecord.start_rank ?? currentRank,
             keyword: keyword.keyword,
             link_url: keyword.link_url,
+            mid: mid,
             updated_at: now,
           })
           .eq('id', slotRecord.id);
@@ -169,6 +170,7 @@ export async function saveRankToSlotNaver(
           customer_name: keyword.customer_name || '기본고객',
           current_rank: currentRank,
           start_rank: currentRank,
+          mid: mid,
           expiry_date: expiryDate.toISOString().split('T')[0],
           created_at: now,
           updated_at: now,
@@ -219,6 +221,7 @@ export async function saveRankToSlotNaver(
         slot_status_id: slotRecord.id,
         keyword: keyword.keyword,
         link_url: keyword.link_url,
+        mid: mid,
         current_rank: currentRank,
         start_rank: startRank ?? 0,
         previous_rank: previousRank,

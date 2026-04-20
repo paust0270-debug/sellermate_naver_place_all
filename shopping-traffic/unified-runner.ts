@@ -8,6 +8,7 @@
  * 1. 현재 IP 확인 (Heartbeat/로그용)
  * 2. N개 워커 독립 실행 (각 워커가 무한 루프)
  * 3. sellermate_traffic_navershopping id 내림차순으로 작업 가져오기
+ *    → sellermate_slot_naver 에서 mid, keyword_name 직접 조회 (slot_naver 패턴)
  * 4. 성공 시 success_count +1, 실패 시 fail_count +1 (sellermate_slot_naver)
  */
 
@@ -431,13 +432,6 @@ function loadProfile(profileName: string): Profile {
   };
 }
 
-// ============ link_url에서 상품 MID 추출 (smartstore/brand /products/숫자) ============
-function extractMidFromLinkUrl(linkUrl: string | null | undefined): string | null {
-  if (!linkUrl || typeof linkUrl !== "string") return null;
-  const m = linkUrl.match(/\/products\/(\d+)/);
-  return m ? m[1] : null;
-}
-
 // ============ 풀제목 → 조합형 키워드 (당일 1번 식별용: 공백 제거) ============
 function toCombinedKeyword(fullTitle: string): string {
   return (fullTitle || "").replace(/\s+/g, "").trim() || "상품";
@@ -506,7 +500,7 @@ async function claimWorkItem(): Promise<WorkItem | null> {
     for (const task of tasks) {
       const { data: slot, error: slotError } = await supabase
         .from("sellermate_slot_naver")
-        .select("keyword, link_url, keyword_name")
+        .select("*")
         .eq("slot_sequence", task.slot_sequence)
         .single();
 
@@ -521,20 +515,22 @@ async function claimWorkItem(): Promise<WorkItem | null> {
         continue;
       }
 
-      const linkUrl = task.link_url || (slot as any).link_url;
-      const mid = extractMidFromLinkUrl(linkUrl);
-      if (!mid) {
-        log(`[CLAIM] traffic id=${task.id} slot_sequence=${task.slot_sequence} → link_url에서 mid 추출 불가: ${linkUrl}`, "warn");
+      const mid = String((slot as any).mid ?? "").trim();
+      const productNameFromSlot = String((slot as any).keyword_name ?? "").trim();
+      if (!mid || /^NEED_MID_/i.test(mid)) {
+        log(`[CLAIM] traffic id=${task.id} slot_sequence=${task.slot_sequence} → sellermate_slot_naver.mid 없음/무효`, "warn");
+        await supabase.from("sellermate_traffic_navershopping").delete().eq("id", task.id);
+        continue;
+      }
+      if (!productNameFromSlot) {
+        log(`[CLAIM] traffic id=${task.id} slot_sequence=${task.slot_sequence} → keyword_name 없음, 삭제`, "warn");
         await supabase.from("sellermate_traffic_navershopping").delete().eq("id", task.id);
         continue;
       }
 
-      const keywordName = ((slot as any).keyword_name ?? (slot as any).keyword ?? "").trim();
-      const productName = keywordName || (task.keyword || "").trim() || "상품";
-      if (!keywordName) {
-        log(`[CLAIM] traffic id=${task.id} slot_sequence=${task.slot_sequence} → keyword_name 없음, 스킵`, "warn");
-        continue;
-      }
+      const linkUrl = (task.link_url || (slot as any).link_url || "") as string;
+      const keywordName = String((slot as any).keyword_name ?? "").trim() || productNameFromSlot;
+      const productName = productNameFromSlot;
 
       const combined = toCombinedKeyword(productName);
       if (isCombinedKeywordUsedToday(combined)) {
@@ -560,7 +556,7 @@ async function claimWorkItem(): Promise<WorkItem | null> {
         keyword: task.keyword,
         productName,
         mid,
-        linkUrl: task.link_url || (slot as any).link_url,
+        linkUrl,
         keywordName: keywordName || undefined
       };
     }
