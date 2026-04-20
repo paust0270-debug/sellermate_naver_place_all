@@ -1,0 +1,2 @@
+# sellermate_naver_place_all
+sellermate_naver_place_all
