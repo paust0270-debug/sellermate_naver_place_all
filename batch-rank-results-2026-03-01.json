@@ -1,0 +1,38 @@
+{
+  "timestamp": "2026-03-01T09:33:36.000Z",
+  "config": {
+    "batchSize": 1,
+    "maxPages": 15,
+    "cooldown": 7000
+  },
+  "summary": {
+    "total": 1,
+    "success": 1,
+    "notFound": 0,
+    "blocked": 0,
+    "failed": 0,
+    "duration": 11
+  },
+  "results": [
+    {
+      "batchNumber": 1,
+      "keywordId": 1723,
+      "keyword": "갤럭시S25울트라 케이스",
+      "url": "https://smartstore.naver.com/bearpsb/products/11796574720",
+      "mid": "89341085307",
+      "rank": {
+        "totalRank": 4,
+        "organicRank": 4,
+        "isAd": false,
+        "page": 1,
+        "pagePosition": 4
+      },
+      "duration": 11225,
+      "saveResult": {
+        "success": true,
+        "slotNaverId": 3,
+        "action": "updated"
+      }
+    }
+  ]
+}

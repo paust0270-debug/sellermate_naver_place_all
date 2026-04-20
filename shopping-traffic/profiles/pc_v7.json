@@ -1,0 +1,19 @@
+{
+  "name": "pc_v7",
+  "description": "V7 Style PC Profile - CAPTCHA 0%",
+  "fingerprint": false,
+  "browser": "prb",
+  "viewport": {
+    "width": 1280,
+    "height": 720
+  },
+  "locale": "ko-KR",
+  "timezone": "Asia/Seoul",
+  "headers": {
+    "accept-language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7"
+  },
+  "prb_options": {
+    "headless": false,
+    "turnstile": true
+  }
+}

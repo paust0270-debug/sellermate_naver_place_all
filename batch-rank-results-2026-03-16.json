@@ -1,0 +1,33 @@
+{
+  "timestamp": "2026-03-16T08:56:39.432Z",
+  "config": {
+    "batchSize": 1,
+    "maxPages": 15,
+    "cooldown": 7000
+  },
+  "summary": {
+    "total": 1,
+    "success": 0,
+    "notFound": 1,
+    "blocked": 0,
+    "failed": 0,
+    "duration": 120
+  },
+  "results": [
+    {
+      "batchNumber": 1,
+      "keywordId": 31158,
+      "keyword": "차량용방향제",
+      "url": "https://smartstore.naver.com/suretrade/products/10602838708",
+      "mid": "10602838708",
+      "rank": null,
+      "duration": 120303,
+      "error": "15페이지까지 미발견",
+      "saveResult": {
+        "success": true,
+        "slotNaverId": 55,
+        "action": "updated"
+      }
+    }
+  ]
+}

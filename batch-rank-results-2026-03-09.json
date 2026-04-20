@@ -1,0 +1,38 @@
+{
+  "timestamp": "2026-03-09T05:35:44.066Z",
+  "config": {
+    "batchSize": 1,
+    "maxPages": 15,
+    "cooldown": 7000
+  },
+  "summary": {
+    "total": 1,
+    "success": 1,
+    "notFound": 0,
+    "blocked": 0,
+    "failed": 0,
+    "duration": 10
+  },
+  "results": [
+    {
+      "batchNumber": 1,
+      "keywordId": 15155,
+      "keyword": "꽃바구니",
+      "url": "https://smartstore.naver.com/zimflower1/products/6333279008",
+      "mid": "83877781497",
+      "rank": {
+        "totalRank": 33,
+        "organicRank": 33,
+        "isAd": false,
+        "page": 1,
+        "pagePosition": 33
+      },
+      "duration": 10184,
+      "saveResult": {
+        "success": true,
+        "slotNaverId": 33,
+        "action": "updated"
+      }
+    }
+  ]
+}

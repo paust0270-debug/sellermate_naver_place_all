@@ -1,0 +1,38 @@
+{
+  "timestamp": "2026-03-13T06:29:32.455Z",
+  "config": {
+    "batchSize": 1,
+    "maxPages": 15,
+    "cooldown": 7000
+  },
+  "summary": {
+    "total": 1,
+    "success": 1,
+    "notFound": 0,
+    "blocked": 0,
+    "failed": 0,
+    "duration": 10
+  },
+  "results": [
+    {
+      "batchNumber": 1,
+      "keywordId": 24664,
+      "keyword": "제주 레몬",
+      "url": "https://smartstore.naver.com/jeju-lemon/products/12371739698",
+      "mid": "89916250415",
+      "rank": {
+        "totalRank": 10,
+        "organicRank": 10,
+        "isAd": false,
+        "page": 1,
+        "pagePosition": 10
+      },
+      "duration": 9936,
+      "saveResult": {
+        "success": true,
+        "slotNaverId": 30,
+        "action": "updated"
+      }
+    }
+  ]
+}
