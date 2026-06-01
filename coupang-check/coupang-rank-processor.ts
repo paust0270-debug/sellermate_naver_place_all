@@ -2195,30 +2195,23 @@ async function runFreeCoupangOnce(): Promise<void> {
   }
 }
 
-/** 쿠팡 유료/무료: 핸드폰 테더링(또는 ADB) 없으면 실행 안 함 */
-async function assertPhoneTetheringForCoupang(): Promise<void> {
+/** true = 쿠팡 실행 가능(테더링/ADB). false = 이 PC는 쿠팡만 스킵(통합 러너는 계속) */
+async function canRunCoupangOnThisPc(): Promise<boolean> {
   if (process.env.COUPANG_SKIP_TETHERING_CHECK === '1') {
-    console.log('⚠️ COUPANG_SKIP_TETHERING_CHECK=1 — 테더링 검사 생략');
-    return;
+    console.log('⚠️ COUPANG_SKIP_TETHERING_CHECK=1 — 테더링 없이 쿠팡 실행 (개발용)');
+    return true;
   }
 
   const status = await getPhoneTetheringStatus();
   if (status.ready) {
-    console.log(`📱 테더링 OK: ${status.reason}`);
-    return;
+    console.log(`📱 모바일 IP 사용 가능: ${status.reason}`);
+    return true;
   }
 
-  console.error('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.error('❌ 쿠팡 순위체크 중단 — 핸드폰 테더링이 연결되어 있지 않습니다.');
-  console.error(`   ${status.reason}`);
-  console.error('');
-  console.error('   다음 중 하나를 준비한 뒤 다시 실행하세요:');
-  console.error('   • USB 테더링: 휴대폰 USB 연결 → 테더링(핫스팟/USB) 켜기');
-  console.error('   • ADB: USB 디버깅 허용 후 adb devices 에 device 표시');
-  console.error('');
-  console.error('   (개발 PC만 검사 끄기: COUPANG_SKIP_TETHERING_CHECK=1)');
-  console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
-  process.exit(1);
+  console.log('\n⏭️ 쿠팡(유료/무료) 스킵 — 이 PC에 모바일 테더링·ADB 없음');
+  console.log(`   ${status.reason}`);
+  console.log('   → 쇼핑·플레이스 등은 PC IP로 통합 순서대로 계속합니다.\n');
+  return false;
 }
 
 // 진입점: --free-only → 무료 1건 후 종료, --once → 유료 1건 후 종료, 아니면 무한 루프
@@ -2227,7 +2220,9 @@ const isFreeOnly = argv.includes('--free-only');
 const isOnce = argv.includes('--once');
 
 async function mainEntry(): Promise<void> {
-  await assertPhoneTetheringForCoupang();
+  if (!(await canRunCoupangOnThisPc())) {
+    process.exit(0);
+  }
 
   if (isFreeOnly) {
     await runFreeCoupangOnce();

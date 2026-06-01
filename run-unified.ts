@@ -9,6 +9,7 @@ import { spawn } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
+import { getPhoneTetheringStatus } from './ipRotation.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname);
@@ -94,7 +95,19 @@ async function runShoppingOnce(): Promise<number> {
   return code;
 }
 
+/** 테더링/ADB 없으면 쿠팡만 스킵하고 true (통합 순서는 계속) */
+async function skipCoupangStepIfNoMobile(label: string): Promise<boolean> {
+  if (process.env.COUPANG_SKIP_TETHERING_CHECK === '1') return false;
+  const status = await getPhoneTetheringStatus();
+  if (status.ready) return false;
+  console.log(`\n⏭️ [통합] ${label} 스킵 — 이 PC에 모바일 테더링·ADB 없음`);
+  console.log(`   ${status.reason}`);
+  console.log('   → 다음 단계(플레이스·쇼핑 등)는 PC IP로 계속합니다.\n');
+  return true;
+}
+
 async function runCoupangOnce(): Promise<number> {
+  if (await skipCoupangStepIfNoMobile('쿠팡(유료)')) return 0;
   console.log('\n🛍️ [통합] 쿠팡 1건 처리 시작...\n');
   const { command, args } = getTsxArgs('coupang-check/coupang-rank-processor.ts', ['--once']);
   const code = await run(ROOT, command, args);
@@ -127,6 +140,7 @@ async function runShopFreeOnce(): Promise<number> {
 }
 
 async function runCoupangFreeOnce(): Promise<number> {
+  if (await skipCoupangStepIfNoMobile('쿠팡(무료)')) return 0;
   console.log('\n🛍️🆓 [통합] 쿠팡(무료) 1건 처리 시작...\n');
   const { command, args } = getTsxArgs('coupang-check/coupang-rank-processor.ts', ['--free-only']);
   const code = await run(ROOT, command, args);

@@ -323,6 +323,30 @@ async function main(): Promise<void> {
     });
   }
 
+  console.log('');
+  console.log('-'.repeat(50));
+  log('Supabase 연결 확인');
+  console.log('-'.repeat(50));
+  const verifyScript = path.join(INSTALL_DIR, 'rank-check', 'scripts', 'verify-supabase-env.ts');
+  if (fs.existsSync(verifyScript) && fs.existsSync(tsxCli)) {
+    const nodeExe = process.execPath;
+    const verifyOk = runCommand(`"${nodeExe}" "${tsxCli}" "${verifyScript}"`, {
+      cwd: INSTALL_DIR,
+      env: { ...process.env, ...fileEnv },
+    });
+    if (!verifyOk) {
+      console.log('');
+      console.log('[오류] Supabase에 연결할 수 없습니다.');
+      console.log(`  .env: ${envPath}`);
+      console.log('  → 정상 PC의 .env(SUPABASE_URL, sb_secret_ 키)를 복사하세요.');
+      console.log('  → Legacy JWT(eyJ…)는 사용할 수 없습니다.');
+      console.log('  → 방화벽/망에서 *.supabase.co 차단 여부를 확인하세요.');
+      exitWithPause(1);
+    }
+  } else {
+    log('Supabase 점검 스크립트 없음 — 스킵');
+  }
+
   // 6. 순위 체크 실행
   console.log('');
   console.log('-'.repeat(50));

@@ -99,7 +99,13 @@ async function claimKeywords(claimLimit: number): Promise<any[]> {
     .limit(claimLimit);
 
   if (selectError || !available || available.length === 0) {
-    if (selectError) console.error('❌ 작업 할당 조회 실패:', selectError.message);
+    if (selectError) {
+      console.error('❌ 작업 할당 조회 실패:', selectError.message);
+      if (String(selectError.message).includes('fetch failed')) {
+        console.error('   → D:\\naverrank\\.env 의 SUPABASE_URL / sb_secret_ 키·네트워크(방화벽) 확인');
+        console.error('   → npx tsx rank-check/scripts/verify-supabase-env.ts 로 점검');
+      }
+    }
     return [];
   }
 
