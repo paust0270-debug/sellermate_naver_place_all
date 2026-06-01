@@ -8,6 +8,32 @@
 
 import type { Page } from 'puppeteer';
 
+/**
+ * tsx/esbuild가 page.evaluate 콜백에 __name을 주입해 브라우저에서 ReferenceError 발생.
+ * evaluateOnNewDocument / addInitScript로 모든 네비게이션 전에 폴리필.
+ */
+const POLYFILL_SCRIPT = `window.__name = function(f){return f;};`;
+
+export async function injectEvaluatePolyfill(page: Page): Promise<void> {
+  const p = page as Page & {
+    evaluateOnNewDocument?: (script: string) => Promise<void>;
+    addInitScript?: (script: string) => Promise<void>;
+    context?: () => { addInitScript?: (script: string) => Promise<void> };
+  };
+  if (typeof p.evaluateOnNewDocument === 'function') {
+    await p.evaluateOnNewDocument(POLYFILL_SCRIPT);
+    return;
+  }
+  if (typeof p.addInitScript === 'function') {
+    await p.addInitScript(POLYFILL_SCRIPT);
+    return;
+  }
+  const ctx = p.context?.();
+  if (ctx && typeof ctx.addInitScript === 'function') {
+    await ctx.addInitScript(POLYFILL_SCRIPT);
+  }
+}
+
 // ========== 유틸 함수 ==========
 function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -82,7 +108,7 @@ export async function humanScroll(page: Page, totalDistance: number): Promise<vo
     const scrollAmount = 300 + Math.random() * 300;
     const actualScroll = Math.min(scrollAmount, totalDistance - scrolled);
 
-    await page.evaluate((y) => window.scrollBy(0, y), actualScroll);
+    await page.evaluate(`window.scrollBy(0, ${actualScroll})`);
     scrolled += actualScroll;
 
     // 랜덤 딜레이 (50~150ms, 더 빠른 스크롤)

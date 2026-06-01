@@ -38,8 +38,9 @@ function delay(ms: number): Promise<void> {
 function parseArgs(): { limit: number; once: boolean } {
   const limitArg = process.argv.find((a) => a.startsWith('--limit='));
   const once = process.argv.includes('--once');
-  const limit = limitArg ? parseInt(limitArg.split('=')[1], 10) : 10;
-  return { limit: isNaN(limit) ? 10 : limit, once };
+  const defaultLimit = parseInt(process.env.CLAIM_LIMIT || '1', 10);
+  const limit = limitArg ? parseInt(limitArg.split('=')[1], 10) : defaultLimit;
+  return { limit: isNaN(limit) ? defaultLimit : limit, once };
 }
 
 /** 무료 쇼핑 키워드만 조회 (assigned_to null만, 원자적 락) */

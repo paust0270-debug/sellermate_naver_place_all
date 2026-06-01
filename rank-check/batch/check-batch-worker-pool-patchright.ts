@@ -170,7 +170,7 @@ async function main() {
   const TOTAL_RAM_GB = Math.round(os.totalmem() / (1024 ** 3));
 
   const BATCH_COOLDOWN_MS = 5000;
-  const claimLimit = limit || 1000;
+  const claimLimit = limit ?? parseInt(process.env.CLAIM_LIMIT || '1', 10);
 
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   console.log('📊 워커 풀 방식 순위 체크 (Patchright, 24시간 풀가동)');

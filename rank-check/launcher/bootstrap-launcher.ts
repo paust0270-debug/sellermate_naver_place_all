@@ -6,34 +6,38 @@
  * 2. Git clone/pull
  * 3. .env 파일 자동 생성 (하드코딩된 값)
  * 4. npm install
- * 5. 순위 체크 24시간 실행
+ * 5. Git 5분 감시 + 통합 러너 24시간 실행 (remote-watch-launcher)
  *
  * 요구사항: Node.js, Git
  */
 
-import { execSync, spawn } from 'child_process';
+import { execSync, spawn, type ChildProcess } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
-
-// ============ 하드코딩된 .env 값 ============
-// Anthropic API Key (분할 저장 - GitHub Secret Scanning 우회)
-const _K = ['sk-ant-api03', 'e2Gp8giM9Kgp0YnoXKnmZa2xUZKD98bP3kuDg594_fdzMZs89ce', 'RxavgWaUDne7LYdzY6cPldWcLEtpbFBxjw', '9xv8QwAA'];
-
-const ENV_VALUES = {
-  SUPABASE_URL: 'https://cwsdvgkjptuvbdtxcejt.supabase.co',
-  SUPABASE_ANON_KEY: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImN3c2R2Z2tqcHR1dmJkdHhjZWp0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTYzOTQ0MzksImV4cCI6MjA3MTk3MDQzOX0.kSKAYjtFWoxHn0PNq6mAZ2OEngeGR7i_FW3V75Hrby8',
-  SUPABASE_SERVICE_ROLE_KEY: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImN3c2R2Z2tqcHR1dmJkdHhjZWp0Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1NjM5NDQzOSwiZXhwIjoyMDcxOTcwNDM5fQ.KOOooT-vz-JW2rcdwJdQdirePPIERmYWR4Vqy2v_2NY',
-  DATABASE_URL: 'postgresql://postgres.cwsdvgkjptuvbdtxcejt:EGxhoDsQvygcwY5c@aws-0-ap-northeast-2.pooler.supabase.com:6543/postgres',
-  DIRECT_URL: 'postgresql://postgres:EGxhoDsQvygcwY5c@db.cwsdvgkjptuvbdtxcejt.supabase.co:5432/postgres',
-  DATABASE_PASSWORD: 'EGxhoDsQvygcwY5c',
-  NODE_ENV: 'production',
-  ANTHROPIC_API_KEY: `${_K[0]}-${_K[1]}-${_K[2]}-${_K[3]}`,
-};
+import * as os from 'os';
+import { syncGitRepo, GIT_CHECK_INTERVAL_MS } from './git-sync';
 
 // ============ 설정 ============
-const INSTALL_DIR = 'D:\\naverrank';
-const GIT_REPO = 'https://github.com/mim1012/Rank_Updator.git';
-const GIT_BRANCH = 'main';
+const GIT_REPO =
+  process.env.NAVER_RANK_GIT_REPO ||
+  'https://github.com/paust0270-debug/sellermate_naver_place_all.git';
+const GIT_BRANCH = process.env.GIT_BRANCH || 'main';
+
+/** D: 없으면 %LOCALAPPDATA%\SellermateNaverRank 사용 */
+function resolveInstallDir(): string {
+  if (process.env.NAVER_RANK_INSTALL_DIR?.trim()) {
+    return path.resolve(process.env.NAVER_RANK_INSTALL_DIR.trim());
+  }
+  if (fs.existsSync('D:\\')) {
+    return 'D:\\naverrank';
+  }
+  const localApp =
+    process.env.LOCALAPPDATA ||
+    path.join(os.homedir(), 'AppData', 'Local');
+  return path.join(localApp, 'SellermateNaverRank');
+}
+
+const INSTALL_DIR = resolveInstallDir();
 
 // ============ 유틸리티 ============
 function log(message: string): void {
@@ -41,15 +45,139 @@ function log(message: string): void {
   console.log(`[${timestamp}] ${message}`);
 }
 
-function runCommand(command: string, options: { cwd?: string; silent?: boolean } = {}): boolean {
+/** 더블클릭 실행 시 오류 메시지를 볼 수 있게 대기 */
+function exitWithPause(code: number): never {
+  if (process.platform === 'win32' && process.env.NAVER_RANK_NO_PAUSE !== '1') {
+    console.log('');
+    try {
+      execSync('cmd /c pause', { stdio: 'inherit' });
+    } catch {}
+  }
+  process.exit(code);
+}
+
+/** 설치 폴더 .env 파싱 (자식 프로세스에 전달, Legacy JWT 덮어쓰기 방지) */
+function loadEnvFile(envPath: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!fs.existsSync(envPath)) return out;
+  const content = fs.readFileSync(envPath, 'utf8');
+  for (const line of content.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq <= 0) continue;
+    const key = trimmed.slice(0, eq).trim();
+    const value = trimmed.slice(eq + 1).trim();
+    if (key) out[key] = value;
+  }
+  return out;
+}
+
+function buildChildEnv(): NodeJS.ProcessEnv {
+  const envPath = path.join(INSTALL_DIR, '.env');
+  const fileEnv = loadEnvFile(envPath);
+  return {
+    ...process.env,
+    ...fileEnv,
+    GIT_SYNC_HARD_RESET: '1',
+    GIT_CHECK_INTERVAL_MS: String(5 * 60 * 1000),
+  };
+}
+
+/** 통합 러너 우선, 쇼핑 전용 auto-update는 최후 */
+function resolveLauncherScript(): string | null {
+  const candidates = [
+    'rank-check/launcher/remote-watch-launcher.ts',
+    'run-unified.ts',
+    'rank-check/launcher/auto-update-launcher.ts',
+  ];
+  for (const rel of candidates) {
+    if (fs.existsSync(path.join(INSTALL_DIR, rel))) {
+      return rel;
+    }
+  }
+  return null;
+}
+
+function isUnifiedLauncher(rel: string): boolean {
+  return (
+    rel.includes('remote-watch') ||
+    rel === 'run-unified.ts' ||
+    rel.endsWith('run-unified.ts')
+  );
+}
+
+function killChildTree(child: ChildProcess | null): void {
+  if (!child?.pid) return;
+  if (process.platform === 'win32') {
+    try {
+      execSync(`taskkill /pid ${child.pid} /T /F`, { stdio: 'ignore', windowsHide: true });
+    } catch {}
+  } else {
+    try {
+      child.kill('SIGTERM');
+    } catch {}
+  }
+}
+
+/** 시스템에 설치된 node.exe (pkg EXE는 PATH에 node가 없을 수 있음) */
+function findNodeBin(): string {
+  try {
+    const out = execSync('where node', {
+      encoding: 'utf8',
+      shell: true,
+      windowsHide: true,
+    }).trim();
+    const first = out.split(/\r?\n/).find((line) => line.trim().endsWith('node.exe'));
+    if (first?.trim() && fs.existsSync(first.trim())) {
+      return first.trim();
+    }
+  } catch {}
+  return 'node';
+}
+
+function getTsxSpawn(scriptRel: string): {
+  command: string;
+  args: string[];
+  shell: boolean;
+} {
+  const scriptPath = path.join(INSTALL_DIR, scriptRel);
+  const nodeBin = findNodeBin();
+  const localTsx = path.join(INSTALL_DIR, 'node_modules', 'tsx', 'dist', 'cli.mjs');
+  const tsxCmd = path.join(INSTALL_DIR, 'node_modules', '.bin', 'tsx.cmd');
+
+  if (fs.existsSync(localTsx)) {
+    return { command: nodeBin, args: [localTsx, scriptPath], shell: false };
+  }
+  if (fs.existsSync(tsxCmd)) {
+    return { command: tsxCmd, args: [scriptPath], shell: true };
+  }
+
+  // tsx 미설치 시 (Windows: npx는 .cmd라 shell 필요)
+  if (process.platform === 'win32') {
+    return {
+      command: 'cmd.exe',
+      args: ['/d', '/s', '/c', 'npx', 'tsx', scriptRel],
+      shell: false,
+    };
+  }
+  return { command: 'npx', args: ['tsx', scriptRel], shell: true };
+}
+
+function runCommand(
+  command: string,
+  options: { cwd?: string; silent?: boolean; env?: NodeJS.ProcessEnv } = {}
+): boolean {
   try {
     execSync(command, {
       cwd: options.cwd || INSTALL_DIR,
       stdio: options.silent ? 'pipe' : 'inherit',
       encoding: 'utf8',
+      shell: true,
+      env: options.env ? { ...process.env, ...options.env } : process.env,
     });
     return true;
-  } catch (error) {
+  } catch {
     return false;
   }
 }
@@ -62,17 +190,12 @@ async function main(): Promise<void> {
   console.log('='.repeat(50));
   console.log('');
 
-  // 환경변수 주입 (현재 프로세스)
-  Object.assign(process.env, ENV_VALUES);
-
-  // 1. D드라이브 확인
+  console.log(`설치 경로: ${INSTALL_DIR}`);
   if (!fs.existsSync('D:\\')) {
-    console.log('[오류] D드라이브가 없습니다.');
-    console.log('프로그램을 종료합니다.');
-    process.exit(1);
+    log('D: 드라이브 없음 → 사용자 폴더에 설치합니다.');
   }
 
-  // 2. 설치 폴더 생성/확인
+  // 1. 설치 폴더 생성/확인
   console.log('-'.repeat(50));
   log(`[1/5] 설치 폴더: ${INSTALL_DIR}`);
   console.log('-'.repeat(50));
@@ -92,29 +215,33 @@ async function main(): Promise<void> {
   console.log('-'.repeat(50));
 
   // Git 설치 확인
-  if (!runCommand('git --version', { silent: true, cwd: 'D:\\' })) {
+  if (!runCommand('git --version', { silent: true, cwd: os.homedir() })) {
     console.log('[오류] Git이 설치되어 있지 않습니다.');
     console.log('https://git-scm.com/download/win 에서 설치해주세요.');
-    process.exit(1);
+    exitWithPause(1);
   }
 
   const gitDir = path.join(INSTALL_DIR, '.git');
+  const installParent = path.dirname(INSTALL_DIR);
+
   if (fs.existsSync(gitDir)) {
-    // 기존 repo 업데이트
     log('git fetch...');
     runCommand(`git fetch origin ${GIT_BRANCH}`, { cwd: INSTALL_DIR });
     log('git reset --hard...');
     runCommand(`git reset --hard origin/${GIT_BRANCH}`, { cwd: INSTALL_DIR });
     log('Git 업데이트 완료');
   } else {
-    // 새로 clone
-    log('git clone...');
-    if (!runCommand(`git clone ${GIT_REPO} "${INSTALL_DIR}"`, { cwd: 'D:\\' })) {
-      console.log('[경고] Git clone 실패');
-      console.log('수동으로 코드를 복사해주세요.');
-    } else {
-      log('Git clone 완료');
+    if (!fs.existsSync(installParent)) {
+      fs.mkdirSync(installParent, { recursive: true });
     }
+    log(`git clone → ${INSTALL_DIR}`);
+    if (!runCommand(`git clone ${GIT_REPO} "${INSTALL_DIR}"`, { cwd: installParent })) {
+      console.log('[오류] Git clone 실패');
+      console.log('  - 인터넷 / GitHub 접속 확인');
+      console.log('  - 또는 수동 clone 후 NAVER_RANK_INSTALL_DIR 환경변수로 경로 지정');
+      exitWithPause(1);
+    }
+    log('Git clone 완료');
   }
 
   // 4. .env 파일 생성
@@ -124,12 +251,37 @@ async function main(): Promise<void> {
   console.log('-'.repeat(50));
 
   const envPath = path.join(INSTALL_DIR, '.env');
-  const envContent = Object.entries(ENV_VALUES)
-    .map(([key, value]) => `${key}=${value}`)
-    .join('\n');
+  const envExample = path.join(INSTALL_DIR, '.env.example');
+  if (fs.existsSync(envPath)) {
+    log('기존 .env 유지 (덮어쓰지 않음)');
+  } else if (fs.existsSync(envExample)) {
+    fs.copyFileSync(envExample, envPath);
+    log('.env를 .env.example에서 복사했습니다.');
+    console.log('  → Supabase 키(sb_secret_ / sb_publishable_)를 .env에 입력 후 다시 실행하세요.');
+    exitWithPause(1);
+  } else {
+    fs.writeFileSync(
+      envPath,
+      [
+        'SUPABASE_URL=https://your-project.supabase.co',
+        'SUPABASE_SERVICE_ROLE_KEY=sb_secret_your-key',
+        'NEXT_PUBLIC_SUPABASE_ANON_KEY=sb_publishable_your-key',
+      ].join('\n'),
+      'utf8'
+    );
+    log('.env 템플릿 생성 — 키 입력 후 다시 실행하세요.');
+    exitWithPause(1);
+  }
 
-  fs.writeFileSync(envPath, envContent, 'utf8');
-  log('.env 파일 생성 완료');
+  const fileEnv = loadEnvFile(envPath);
+  if (!fileEnv.SUPABASE_URL || !fileEnv.SUPABASE_SERVICE_ROLE_KEY) {
+    console.log('[오류] .env에 SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY가 필요합니다.');
+    console.log(`  경로: ${envPath}`);
+    exitWithPause(1);
+  }
+  if (fileEnv.SUPABASE_SERVICE_ROLE_KEY.startsWith('eyJ')) {
+    console.log('[경고] Legacy JWT service_role 키입니다. sb_secret_ 키로 교체하세요.');
+  }
 
   // 5. 의존성 설치
   console.log('');
@@ -141,59 +293,136 @@ async function main(): Promise<void> {
   if (!runCommand('npm --version', { silent: true, cwd: INSTALL_DIR })) {
     console.log('[오류] npm이 설치되어 있지 않습니다.');
     console.log('https://nodejs.org 에서 Node.js를 설치해주세요.');
-    process.exit(1);
+    exitWithPause(1);
   }
 
-  log('npm install... (시간이 걸릴 수 있습니다)');
-  if (runCommand('npm install --legacy-peer-deps', { cwd: INSTALL_DIR })) {
+  log('npm install... (시간이 걸릴 수 있습니다, tsx 포함 devDependencies)');
+  const installOk = runCommand(
+    'npm install --legacy-peer-deps --include=dev',
+    {
+      cwd: INSTALL_DIR,
+      env: {
+        NPM_CONFIG_PRODUCTION: 'false',
+        NODE_ENV: 'development',
+      },
+    }
+  );
+  if (installOk) {
     log('의존성 설치 완료');
   } else {
     console.log('[경고] npm install 실패');
     console.log('기존 node_modules로 계속 시도합니다.');
   }
 
+  const tsxCli = path.join(INSTALL_DIR, 'node_modules', 'tsx', 'dist', 'cli.mjs');
+  if (!fs.existsSync(tsxCli)) {
+    log('tsx 없음 → 추가 설치 시도...');
+    runCommand('npm install tsx@^4.7.0 --save-dev --legacy-peer-deps', {
+      cwd: INSTALL_DIR,
+      env: { NPM_CONFIG_PRODUCTION: 'false' },
+    });
+  }
+
   // 6. 순위 체크 실행
   console.log('');
   console.log('-'.repeat(50));
-  log('[5/5] 순위 체크 시작');
+  log('[5/5] 원격 감시 런처 시작 (Git 5분 + 통합 실행)');
   console.log('-'.repeat(50));
 
-  const launcherPath = 'rank-check/launcher/auto-update-launcher.ts';
-  log(`실행: npx tsx ${launcherPath}`);
+  const launcherRel = resolveLauncherScript();
+  if (!launcherRel) {
+    console.log('[오류] 런처 스크립트를 찾을 수 없습니다.');
+    console.log('  GitHub main에 최신 코드가 push 되었는지 확인하세요.');
+    console.log(`  설치 폴더: ${INSTALL_DIR}`);
+    exitWithPause(1);
+  }
+
+  const unified = isUnifiedLauncher(launcherRel);
+  const useBootstrapGitWatch =
+    unified && !launcherRel.includes('remote-watch');
+
+  log(`실행: ${launcherRel}`);
   console.log('');
   console.log('='.repeat(50));
-  console.log('  24시간 순위 체크 모드');
+  if (unified) {
+    console.log('  통합 러너: 쇼핑(유료)→쿠팡(유료)→플레이스(유료)→플레이스(무료)→쇼핑(무료)→쿠팡(무료)');
+    console.log(
+      useBootstrapGitWatch
+        ? '  Git 5분마다 업데이트 (부트스트랩 감시)'
+        : '  Git 5분마다 업데이트 (remote-watch-launcher)'
+    );
+  } else {
+    console.log('  ⚠️ 쇼핑 순위체크만 실행 (구버전 auto-update-launcher)');
+    console.log('  통합 실행: run-unified.ts 가 설치 폴더에 있는지 확인하세요.');
+  }
   console.log('  종료: Ctrl+C');
   console.log('='.repeat(50));
   console.log('');
 
-  const launcher = spawn('npx', ['tsx', launcherPath], {
-    cwd: INSTALL_DIR,
-    stdio: 'inherit',
-    shell: true,
-    env: { ...process.env, ...ENV_VALUES },
-  });
+  let child: ChildProcess | null = null;
+  let lastGitCheck = 0;
+  let shuttingDown = false;
 
-  launcher.on('error', (error) => {
-    console.log(`[오류] 런처 실행 실패: ${error.message}`);
-    process.exit(1);
-  });
+  const startChild = () => {
+    const { command, args, shell } = getTsxSpawn(launcherRel);
+    log(`▶️ ${command} ${args.join(' ')}`);
 
-  launcher.on('close', (code) => {
-    console.log('');
-    log(`런처 종료 (코드: ${code})`);
-    process.exit(code || 0);
-  });
+    child = spawn(command, args, {
+      cwd: INSTALL_DIR,
+      stdio: 'inherit',
+      shell,
+      windowsHide: false,
+      env: buildChildEnv(),
+    });
 
-  // Ctrl+C 처리
+    child.on('error', (error) => {
+      console.log(`[오류] 실행 실패: ${error.message}`);
+      exitWithPause(1);
+    });
+
+    child.on('close', (code) => {
+      child = null;
+      if (shuttingDown) {
+        process.exit(code || 0);
+        return;
+      }
+      log(`프로세스 종료 (코드: ${code ?? '?'}) — 5초 후 재시작`);
+      setTimeout(() => {
+        if (!shuttingDown) startChild();
+      }, 5000);
+    });
+  };
+
+  startChild();
+
+  if (useBootstrapGitWatch) {
+    setInterval(async () => {
+      if (shuttingDown) return;
+      const now = Date.now();
+      if (now - lastGitCheck < GIT_CHECK_INTERVAL_MS) return;
+      lastGitCheck = now;
+      const result = await syncGitRepo(INSTALL_DIR, { hardReset: true });
+      if (result.updated) {
+        log(`Git 업데이트 → 통합 러너 재시작 (${result.message})`);
+        killChildTree(child);
+        child = null;
+        setTimeout(() => {
+          if (!shuttingDown) startChild();
+        }, 2000);
+      }
+    }, 60_000);
+  }
+
   process.on('SIGINT', () => {
+    shuttingDown = true;
     console.log('');
     log('종료 신호 수신...');
-    launcher.kill('SIGINT');
+    killChildTree(child);
+    process.exit(0);
   });
 }
 
 main().catch((error) => {
   console.error('[오류]', error);
-  process.exit(1);
+  exitWithPause(1);
 });

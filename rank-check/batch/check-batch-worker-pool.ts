@@ -15,6 +15,8 @@
  *   npx tsx rank-check/batch/check-batch-worker-pool.ts              # 4워커로 전체 처리
  *   npx tsx rank-check/batch/check-batch-worker-pool.ts --workers=2  # 2워커로 처리
  *   npx tsx rank-check/batch/check-batch-worker-pool.ts --limit=20   # 20개만 처리
+ *
+ * 다중 PC: 기본 --limit=1 (한 PC가 한 번에 1건만 assigned_to 락)
  */
 
 import 'dotenv/config';
@@ -30,6 +32,8 @@ import * as os from 'os';
 // 설정
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 const DEFAULT_WORKERS = 1;
+/** 다중 PC 분산: 기본 1건씩만 할당 (환경변수 CLAIM_LIMIT 로 변경 가능) */
+const DEFAULT_CLAIM_LIMIT = parseInt(process.env.CLAIM_LIMIT || '1', 10);
 const MAX_PAGES = parseInt(process.env.MAX_PAGES || '15', 10);
 const STALE_TIMEOUT_MS = 30 * 60 * 1000; // 30분 (타임아웃 복구)
 const STALE_CHECK_INTERVAL_MS = 60 * 1000; // 1분마다 stale 체크
@@ -180,7 +184,7 @@ async function main() {
   const { workers, limit } = parseArgs();
   const CPU_CORES = os.cpus().length;
   const TOTAL_RAM_GB = Math.round(os.totalmem() / (1024 ** 3));
-  const claimLimit = limit || 1000;
+  const claimLimit = limit ?? DEFAULT_CLAIM_LIMIT;
 
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   console.log('📊 워커 풀 방식 순위 체크 (24시간 풀가동)');
@@ -188,8 +192,9 @@ async function main() {
   console.log(`🖥️  PC: ${os.hostname()}`);
   console.log(`💻 CPU: ${CPU_CORES}코어 | RAM: ${TOTAL_RAM_GB}GB`);
   console.log(`👷 워커: ${workers}개`);
+  console.log(`📋 회차당 할당: ${claimLimit}건 (다중 PC는 1건 권장)`);
   console.log(`🔧 Worker ID: ${WORKER_ID}`);
-  console.log('   키워드 처리 완료 시 자동으로 다음 목록 조회 후 계속 실행 (Ctrl+C 종료)');
+  console.log('   키워드 1건 처리 → 완료 후 다음 1건 할당 (Ctrl+C 종료)');
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 
   // 24시간 풀가동: 키워드 처리 → 완료 후 다시 조회 → 반복

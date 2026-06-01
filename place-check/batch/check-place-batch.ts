@@ -134,7 +134,7 @@ async function main() {
         .not('link_url', 'is', null)
         .is('assigned_to', null)
         .order('id', { ascending: false })
-        .limit(limit ?? 100);
+        .limit(limit ?? parseInt(process.env.CLAIM_LIMIT || '1', 10));
       if (slotOnly) {
         query = query.not('slot_id', 'is', null).is('free_place_id', null);
       } else if (freeOnly) {

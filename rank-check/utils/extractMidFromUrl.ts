@@ -12,6 +12,22 @@
  * @param url - 네이버 쇼핑 상품 URL (쿼리 파라미터 포함 가능)
  * @returns MID(숫자 문자열) 또는 null
  */
+/** URL 쿼리의 nv_mid / nvMid 만 (스마트스토어 /products/ 숫자는 제외) */
+export function extractNvMidFromUrl(url: string): string | null {
+  try {
+    const urlObj = new URL(url);
+    const nvMidUnderscore = urlObj.searchParams.get('nv_mid');
+    if (nvMidUnderscore) return nvMidUnderscore;
+    const nvMid = urlObj.searchParams.get('nvMid');
+    if (nvMid) return nvMid;
+    const nvMidMatch = url.match(/[?&]nv_mid=(\d+)/i);
+    if (nvMidMatch) return nvMidMatch[1];
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export function extractMidFromUrl(url: string): string | null {
   try {
     const urlObj = new URL(url);
@@ -20,8 +36,15 @@ export function extractMidFromUrl(url: string): string | null {
     const mid = urlObj.searchParams.get('mid');
     if (mid) return mid;
 
+    const nvMidUnderscore = urlObj.searchParams.get('nv_mid');
+    if (nvMidUnderscore) return nvMidUnderscore;
+
     const nvMid = urlObj.searchParams.get('nvMid');
     if (nvMid) return nvMid;
+
+    // searchGate 등: query string에 nv_mid= 가 있는 경우
+    const nvMidMatch = url.match(/[?&]nv_mid=(\d+)/i);
+    if (nvMidMatch) return nvMidMatch[1];
 
     // 패턴 2: smartstore.naver.com/*/products/{MID}
     if (urlObj.hostname.includes('smartstore.naver.com')) {

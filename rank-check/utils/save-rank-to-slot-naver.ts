@@ -8,6 +8,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { TABLE_SLOT, TABLE_HISTORY } from '../config/supabase-tables';
+import { isValidMidId } from './resolve-shopping-mid';
 
 export interface KeywordRecord {
   id: number;
@@ -39,6 +40,14 @@ export interface RankResult {
   shippingFee?: number | null;  // 배송비 (무료면 0)
   keywordName?: string | null;  // 상품명 (이미지 alt 속성)
   tradeName?: string | null;  // 상호명 (스마트스토어 링크 텍스트)
+  /** data-shp-contents-id (nv_mid 타입) */
+  contentsId?: string | null;
+  /** 브리지 URL 등에서 추출한 nv_mid */
+  nvMid?: string | null;
+  /** dtl catalog_nv_mid */
+  catalogMid?: string | null;
+  /** dtl chnl_prod_no 또는 URL productId */
+  channelProductNo?: string | null;
 }
 
 export interface SaveResult {
@@ -61,6 +70,12 @@ export async function saveRankToSlotNaver(
   keyword: KeywordRecord,
   rankResult: RankResult | null
 ): Promise<SaveResult> {
+  const toNumber = (val: unknown): number | null => {
+    if (val === null || val === undefined || val === '') return null;
+    const num = Number(val);
+    return isNaN(num) ? null : num;
+  };
+
   try {
     // 순위 데이터 준비
     const currentRank = rankResult?.totalRank ?? -1; // 미발견 시 -1
@@ -68,7 +83,14 @@ export async function saveRankToSlotNaver(
     const isAd = rankResult?.isAd ?? false;
     const pageNumber = rankResult?.page ?? null;
     const productName = rankResult?.productName ?? null;
-    const mid = rankResult?.mid ?? null;
+    const mid = isValidMidId(rankResult?.mid) ? String(rankResult!.mid).trim() : null;
+    const catalogMid = isValidMidId(rankResult?.catalogMid)
+      ? String(rankResult!.catalogMid).trim()
+      : null;
+    const channelProductNo =
+      rankResult?.channelProductNo && String(rankResult.channelProductNo).trim()
+        ? String(rankResult.channelProductNo).trim()
+        : null;
 
     let slotRecord: any = null;
     const isRankNotFound = currentRank === -1;
@@ -144,7 +166,15 @@ export async function saveRankToSlotNaver(
             start_rank: slotRecord.start_rank ?? currentRank,
             keyword: keyword.keyword,
             link_url: keyword.link_url,
-            mid: mid,
+            ...(mid ? { mid } : {}),
+            ...(catalogMid ? { catalog_mid: catalogMid } : {}),
+            ...(channelProductNo ? { channel_product_no: channelProductNo } : {}),
+            ...(rankResult?.tradeName
+              ? { trade_name: String(rankResult.tradeName).trim() }
+              : {}),
+            ...(rankResult?.keywordName
+              ? { keyword_name: String(rankResult.keywordName).trim() }
+              : {}),
             updated_at: now,
           })
           .eq('id', slotRecord.id);
@@ -171,7 +201,9 @@ export async function saveRankToSlotNaver(
           customer_name: keyword.customer_name || '기본고객',
           current_rank: currentRank,
           start_rank: currentRank,
-          mid: mid,
+          ...(mid ? { mid } : {}),
+          ...(catalogMid ? { catalog_mid: catalogMid } : {}),
+          ...(channelProductNo ? { channel_product_no: channelProductNo } : {}),
           expiry_date: expiryDate.toISOString().split('T')[0],
           created_at: now,
           updated_at: now,
@@ -199,13 +231,6 @@ export async function saveRankToSlotNaver(
         action: 'updated',
       };
     }
-
-    // 숫자 필드 정규화 (empty string을 null로 변환)
-    const toNumber = (val: any): number | null => {
-      if (val === null || val === undefined || val === '') return null;
-      const num = Number(val);
-      return isNaN(num) ? null : num;
-    };
 
     // 순위 변화 계산 (이전 순위가 있으면 비교, -1은 변화 계산 제외)
     const previousRank = toNumber(slotRecord.current_rank);
@@ -251,6 +276,18 @@ export async function saveRankToSlotNaver(
     } else {
       const rankDisplay = isRankNotFound ? '미발견(-1)' : currentRank;
       console.log(`   📊 히스토리 추가 완료 (순위: ${rankDisplay})`);
+      console.log(
+        `   📦 히스토리 payload: mid=${mid ?? '-'} rank=${currentRank}`
+      );
+      console.log(
+        `   📦 슬롯(${TABLE_SLOT}) payload: ${JSON.stringify({
+          mid,
+          catalog_mid: catalogMid,
+          channel_product_no: channelProductNo,
+          trade_name: rankResult?.tradeName ?? null,
+          current_rank: currentRank,
+        })}`
+      );
     }
 
     return {

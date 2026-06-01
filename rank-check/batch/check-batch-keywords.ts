@@ -27,7 +27,9 @@ const CPU_CORES = os.cpus().length;
 const TOTAL_RAM_GB = Math.round(os.totalmem() / (1024 ** 3));
 
 // 배치 크기: 2개 고정 (브라우저 2개 병렬)
-const BATCH_SIZE = parseInt(process.env.BATCH_SIZE || '2', 10);
+/** 다중 PC 분산: 기본 1건씩 처리 */
+const BATCH_SIZE = parseInt(process.env.BATCH_SIZE || '1', 10);
+const DEFAULT_CLAIM_LIMIT = parseInt(process.env.CLAIM_LIMIT || '1', 10);
 const BATCH_COOLDOWN_MS = parseInt(process.env.BATCH_COOLDOWN_MS || '7000', 10); // 10초 → 7초 (30% 추가 감소, 총 53% 감소)
 const MAX_PAGES = parseInt(process.env.MAX_PAGES || '15', 10);
 const STALE_TIMEOUT_MS = 10 * 60 * 1000; // 10분 (타임아웃)
@@ -126,8 +128,9 @@ async function main() {
   console.log('📊 네이버 쇼핑 배치 순위 체크');
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   console.log(`🖥️  PC: ${os.hostname()} (PC_ID: ${PC_ID})`);
+  console.log(`📡 다중 PC: 설정 없음 — 이 PC가 큐에서 1건씩 자동 할당 (10대면 동시에 최대 10건)`);
   console.log(`💻 CPU: ${CPU_CORES}코어 | RAM: ${TOTAL_RAM_GB}GB`);
-  console.log(`⚙️  배치 크기: ${BATCH_SIZE}개 | 쿨다운: ${BATCH_COOLDOWN_MS / 1000}초`);
+  console.log(`⚙️  배치 크기: ${BATCH_SIZE}개 | 회차 할당: ${DEFAULT_CLAIM_LIMIT}건 | 쿨다운: ${BATCH_COOLDOWN_MS / 1000}초`);
   console.log(`🛡️  차단 감지: 연속 ${BLOCK_THRESHOLD}배치 차단 시 IP 로테이션`);
   console.log(`🔧 Worker ID: ${WORKER_ID}`);
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
@@ -141,7 +144,8 @@ async function main() {
   // 1. 셀러메이트 키워드 테이블에서 조회 (--once면 0건 시 즉시 종료)
   console.log('1️⃣ 작업 할당 중...\n');
 
-  const claimLimit = limit || (batchLimit ? batchLimit * BATCH_SIZE : 1000);
+  const claimLimit =
+    limit ?? (batchLimit ? batchLimit * BATCH_SIZE : DEFAULT_CLAIM_LIMIT);
   const effectiveLimit = once ? Math.min(claimLimit, 1) : claimLimit;
   let keywords = await claimKeywords(effectiveLimit);
   while (keywords.length === 0) {
@@ -233,15 +237,21 @@ async function main() {
         console.log(`[${j + 1}/${batch.length}] ${keywordRecord.keyword}`);
 
         // ★ MID 추출 실패 시 삭제 (셀러메이트: 재시도 없음, 본인 할당분만 삭제)
-        if (result.midSource === 'failed' || result.error === 'MID 추출 실패') {
-          console.log(`   ❌ MID 추출 실패 - 대기열에서 삭제`);
+        if (
+          result.midSource === 'failed' ||
+          result.error === 'MID 추출 실패' ||
+          result.error === 'productId 또는 nv_mid 추출 실패'
+        ) {
+          console.log(`   ❌ MID/nv_mid 추출 실패 - 대기열에서 삭제`);
           failedCount++;
           await supabase.from(TABLE_KEYWORDS).delete().eq('id', keywordRecord.id).eq('assigned_to', PC_ID);
           continue;
         }
 
         if (result.rank) {
-          console.log(`   순위: ${result.rank.totalRank}위 (${result.rank.isAd ? '광고' : '오가닉'})`);
+          console.log(
+            `   순위: ${result.rank.totalRank}위 (${result.rank.isAd ? '광고' : '오가닉'}) | nv_mid: ${result.mid ?? '-'}`
+          );
           successCount++;
         } else {
           console.log(`   ❌ 600위 내 미발견`);

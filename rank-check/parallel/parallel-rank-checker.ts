@@ -12,7 +12,10 @@
 
 import { connect } from 'puppeteer-real-browser';
 import { type RankResult } from '../utils/save-rank-to-slot-naver';
-import { humanScroll, humanType } from '../utils/humanBehavior';
+import { extractNvMidFromUrl } from '../utils/extractMidFromUrl';
+import { midSourceLabel, resolveStoredMid } from '../utils/resolve-shopping-mid';
+import { humanScroll, humanType, injectEvaluatePolyfill } from '../utils/humanBehavior';
+import { evaluateString, runFindRankByProductIdOnPage } from './browser-eval';
 import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
@@ -52,14 +55,15 @@ function hasProductId(url: string): boolean {
  * 차단 여부 확인
  */
 async function isBlocked(page: any): Promise<boolean> {
-  return page.evaluate(() => {
-    const bodyText = document.body?.innerText ?? '';
-    return (
-      bodyText.includes('보안 확인') ||
-      bodyText.includes('자동 입력 방지') ||
-      bodyText.includes('일시적으로 제한')
-    );
-  });
+  return evaluateString<boolean>(
+    page,
+    `(() => {
+      const bodyText = document.body && document.body.innerText ? document.body.innerText : '';
+      return bodyText.includes('보안 확인')
+        || bodyText.includes('자동 입력 방지')
+        || bodyText.includes('일시적으로 제한');
+    })()`
+  );
 }
 
 /**
@@ -77,6 +81,7 @@ async function enterShoppingTabForProductId(page: any, keyword: string, logPrefi
     return false;
   }
 
+  await injectEvaluatePolyfill(page).catch(() => {});
   await delay(SAFE_DELAY_MS);
 
   const searchInput = await page.waitForSelector('input[name="query"]', { timeout: 15000 }).catch(() => null);
@@ -98,13 +103,16 @@ async function enterShoppingTabForProductId(page: any, keyword: string, logPrefi
   console.log(`${logPrefix} 🛒 쇼핑탭 이동`);
   let clicked = false;
   for (let attempt = 1; attempt <= 5; attempt++) {
-    clicked = await page.evaluate(() => {
-      const link = document.querySelector<HTMLAnchorElement>('a[href*="search.shopping.naver.com"]');
-      if (!link) return false;
-      link.removeAttribute('target');
-      link.click();
-      return true;
-    });
+    clicked = await evaluateString<boolean>(
+      page,
+      `(() => {
+        const link = document.querySelector('a[href*="search.shopping.naver.com"]');
+        if (!link) return false;
+        link.removeAttribute('target');
+        link.click();
+        return true;
+      })()`
+    );
     if (clicked) break;
     await delay(2000);
   }
@@ -133,7 +141,7 @@ async function enterShoppingTabForProductId(page: any, keyword: string, logPrefi
  * 스크롤로 lazy loading 트리거
  */
 async function hydrateCurrentPage(page: any): Promise<void> {
-  await page.evaluate(() => window.scrollTo(0, 0));
+  await evaluateString(page, 'window.scrollTo(0, 0)');
   await humanScroll(page, SCROLL_STEPS * 550);
   await delay(150); // 300 → 150 (50% 추가 감소, 총 75% 감소)
 }
@@ -141,10 +149,16 @@ async function hydrateCurrentPage(page: any): Promise<void> {
 /**
  * 현재 페이지에서 productId로 순위 찾기
  */
-async function findRankByProductIdOnPage(page: any, targetProductId: string): Promise<{
+async function findRankByProductIdOnPage(
+  page: any,
+  targetProductId: string | null
+): Promise<{
   found: boolean;
   pageRank: number | null;
+  nvMid: string | null;
+  contentsId: string | null;
   catalogNvMid: string | null;
+  chnlProdNo: string | null;
   productName: string | null;
   isAd: boolean;
   productIndex: number | null;
@@ -155,187 +169,10 @@ async function findRankByProductIdOnPage(page: any, targetProductId: string): Pr
   productImageUrl: string | null;
   price: number | null;
   shippingFee: number | null;
+  keywordName: string | null;
   tradeName: string | null;
 }> {
-  return await page.evaluate((targetId: string) => {
-    const result = {
-      found: false,
-      pageRank: null as number | null,
-      catalogNvMid: null as string | null,
-      productName: null as string | null,
-      isAd: false,
-      productIndex: null as number | null,
-      wishCount: null as number | null,
-      reviewCount: null as number | null,
-      starCount: null as number | null,
-      monthCount: null as number | null,
-      productImageUrl: null as string | null,
-      price: null as number | null,
-      shippingFee: null as number | null,
-      keywordName: null as string | null,
-      tradeName: null as string | null,
-    };
-
-    const anchors = document.querySelectorAll('a[data-shp-contents-id][data-shp-contents-rank][data-shp-contents-dtl]');
-
-    for (let i = 0; i < anchors.length; i++) {
-      const anchor = anchors[i];
-      const mid = anchor.getAttribute('data-shp-contents-id');
-      if (!mid || !/^\d{10,}$/.test(mid)) continue;
-
-      const dtl = anchor.getAttribute('data-shp-contents-dtl');
-      const rankStr = anchor.getAttribute('data-shp-contents-rank');
-      const inventory = anchor.getAttribute('data-shp-inventory') || '';
-
-      if (!dtl || !rankStr) continue;
-
-      try {
-        const normalized = dtl.replace(/&quot;/g, '"');
-        const parsed = JSON.parse(normalized);
-
-        if (!Array.isArray(parsed)) continue;
-
-        let chnlProdNo: string | null = null;
-        let catalogNvMid: string | null = null;
-        let prodName: string | null = null;
-        let chnlNm: string | null = null;
-
-        for (const item of parsed) {
-          if (item.key === 'chnl_prod_no' && item.value) {
-            chnlProdNo = String(item.value);
-          }
-          if (item.key === 'catalog_nv_mid' && item.value) {
-            catalogNvMid = String(item.value);
-          }
-          if (item.key === 'prod_nm' && item.value) {
-            prodName = String(item.value).substring(0, 60);
-          }
-          if ((item.key === 'chnl_nm' || item.key === 'mall_nm') && item.value) {
-            chnlNm = String(item.value).trim();
-          }
-        }
-
-        if (chnlProdNo === targetId) {
-          result.found = true;
-          result.pageRank = parseInt(rankStr, 10);
-          result.catalogNvMid = catalogNvMid;
-          result.productName = prodName;
-          result.isAd = /lst\*(A|P|D)/.test(inventory);
-          result.productIndex = i;
-          
-          // 상세페이지 진입 전 데이터 추출
-          // 상품 아이템 컨테이너 찾기
-          const productItem = anchor.closest('.product_item__KQayS');
-          if (productItem) {
-            // 찜개수 추출
-            const wishElement = productItem.querySelector('.product_text__UdGUv .product_num__WuH26');
-            if (wishElement) {
-              const wishText = wishElement.textContent?.trim().replace(/,/g, '') || '';
-              result.wishCount = parseInt(wishText, 10) || null;
-            }
-            
-            // 리뷰수 추출 (여러 방법 시도)
-            // 방법 1: product_etc__Z7jnS 내의 product_num__WuH26 (리뷰 섹션)
-            const reviewElements = productItem.querySelectorAll('.product_etc__Z7jnS');
-            for (const elem of reviewElements) {
-              const text = elem.textContent || '';
-              if (text.includes('리뷰')) {
-                // "리뷰 52" 또는 "(1,775)" 형식
-                const reviewMatch = text.match(/리뷰\s*(\d+)|\((\d+(?:,\d+)*)\)/);
-                if (reviewMatch) {
-                  const reviewNum = reviewMatch[1] || reviewMatch[2];
-                  result.reviewCount = parseInt(reviewNum.replace(/,/g, ''), 10) || null;
-                  break;
-                }
-              }
-            }
-            
-            // 별점 추출
-            const starElement = productItem.querySelector('.product_grade__O_5f5');
-            if (starElement) {
-              // blind 다음 텍스트 노드 찾기
-              const starText = starElement.textContent?.trim() || '';
-              const starMatch = starText.match(/(\d+\.?\d*)/);
-              if (starMatch) {
-                result.starCount = parseFloat(starMatch[1]) || null;
-              }
-            }
-            
-            // 6개월내구매수 추출
-            const purchaseElements = productItem.querySelectorAll('.product_etc__Z7jnS');
-            for (const elem of purchaseElements) {
-              const text = elem.textContent || '';
-              if (text.includes('구매')) {
-                const purchaseMatch = text.match(/구매\s*(\d+(?:,\d+)*)/);
-                if (purchaseMatch) {
-                  result.monthCount = parseInt(purchaseMatch[1].replace(/,/g, ''), 10) || null;
-                  break;
-                }
-              }
-            }
-            
-            // 이미지 URL 및 상품명 추출
-            const imgElement = productItem.querySelector('img[src*="shopping-phinf.pstatic.net"], img[src*="shop-phinf.pstatic.net"]') as HTMLImageElement;
-            if (imgElement) {
-              result.productImageUrl = imgElement.src || imgElement.getAttribute('data-src') || null;
-              // 이미지 alt 속성에서 상품명 추출
-              const altText = imgElement.getAttribute('alt');
-              if (altText) {
-                result.keywordName = altText.trim();
-              }
-            }
-            
-            // 현재가 추출
-            const priceElement = productItem.querySelector('.price_num__Y66T7 em, .product_price__ozt5Q em, .price em');
-            if (priceElement) {
-              const priceText = priceElement.textContent?.trim().replace(/,/g, '').replace(/원/g, '') || '';
-              result.price = parseInt(priceText, 10) || null;
-            }
-            
-            // 배송비 추출
-            const shippingElement = productItem.querySelector('.price_delivery_fee__8n1e5, .deliveryInfo_info_shipping__rRt1K');
-            if (shippingElement) {
-              const shippingText = shippingElement.textContent || '';
-              if (shippingText.includes('무료') || shippingText.includes('무료배송')) {
-                result.shippingFee = 0;
-              } else {
-                const shippingMatch = shippingText.match(/(\d+(?:,\d+)*)\s*원/);
-                if (shippingMatch) {
-                  result.shippingFee = parseInt(shippingMatch[1].replace(/,/g, ''), 10) || null;
-                }
-              }
-            }
-
-            // 상호명 추출 (스마트스토어/브랜드스토어 outlink 링크)
-            const storeLinkSelectors = [
-              'a[href*="smartstore.naver.com/inflow/outlink"]',
-              'a[href*="brand.naver.com/inflow/outlink"]',
-              'a.iMhVFYLc',
-              'a[class*="iMhVFYLc"]',
-            ];
-            for (const sel of storeLinkSelectors) {
-              const storeEl = productItem.querySelector(sel);
-              if (storeEl) {
-                const text = storeEl.textContent?.trim();
-                if (text && text.length > 0 && text.length <= 50) {
-                  result.tradeName = text;
-                  break;
-                }
-              }
-            }
-          }
-
-          if (!result.tradeName && chnlNm) {
-            result.tradeName = chnlNm;
-          }
-          
-          return result;
-        }
-      } catch {}
-    }
-
-    return result;
-  }, targetProductId);
+  return runFindRankByProductIdOnPage(page, targetProductId);
 }
 
 /**
@@ -346,20 +183,19 @@ async function clickProductAndStay(page: any, productIndex: number, logPrefix: s
     console.log(`${logPrefix} 🖱️ 상품 상세페이지 클릭 중...`);
     
     // 해당 인덱스의 상품 앵커 찾기 및 클릭
-    const clicked = await page.evaluate((index: number) => {
-      const anchors = document.querySelectorAll('a[data-shp-contents-id][data-shp-contents-rank][data-shp-contents-dtl]');
-      if (index >= anchors.length) return false;
-      
-      const anchor = anchors[index] as HTMLAnchorElement;
-      if (!anchor) return false;
-      
-      // 스크롤하여 보이게 만들기
-      anchor.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      
-      // 클릭
-      anchor.click();
-      return true;
-    }, productIndex);
+    const clicked = await evaluateString<boolean>(
+      page,
+      `(() => {
+        const index = ${productIndex};
+        const anchors = document.querySelectorAll('a[data-shp-contents-id][data-shp-contents-rank][data-shp-contents-dtl]');
+        if (index >= anchors.length) return false;
+        const anchor = anchors[index];
+        if (!anchor) return false;
+        anchor.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        anchor.click();
+        return true;
+      })()`
+    );
     
     if (!clicked) {
       console.log(`${logPrefix} ⚠️ 상품 앵커를 찾을 수 없습니다.`);
@@ -387,9 +223,10 @@ async function clickProductAndStay(page: any, productIndex: number, logPrefix: s
       await delay(stayTime);
       
       // 약간의 스크롤 (자연스러운 행동)
-      await page.evaluate(() => {
-        window.scrollBy(0, 300 + Math.random() * 200);
-      });
+      await evaluateString(
+        page,
+        `window.scrollBy(0, ${300 + Math.random() * 200})`
+      );
       await delay(1000);
       
       return true;
@@ -415,13 +252,19 @@ async function goToNextPageForProductId(page: any, targetPage: number): Promise<
     return false;
   }
 
-  const buttonExists = await page.evaluate((nextPage: number) => {
-    const buttons = document.querySelectorAll('a.pagination_btn_page__utqBz, a[class*="pagination_btn"]');
-    for (const btn of buttons) {
-      if (btn.textContent?.trim() === String(nextPage)) return true;
-    }
-    return false;
-  }, targetPage);
+  const buttonExists = await evaluateString<boolean>(
+    page,
+    `(() => {
+      const nextPage = ${targetPage};
+      const buttons = document.querySelectorAll('a.pagination_btn_page__utqBz, a[class*="pagination_btn"]');
+      for (let i = 0; i < buttons.length; i++) {
+        const btn = buttons[i];
+        const text = btn.textContent ? btn.textContent.trim() : '';
+        if (text === String(nextPage)) return true;
+      }
+      return false;
+    })()`
+  );
 
   if (!buttonExists) return false;
 
@@ -434,16 +277,23 @@ async function goToNextPageForProductId(page: any, targetPage: number): Promise<
   );
 
   try {
-    const pageButton = await page.evaluateHandle((nextPage: number) => {
-      const buttons = document.querySelectorAll('a.pagination_btn_page__utqBz, a[class*="pagination_btn"]');
-      for (const btn of buttons) {
-        if (btn.textContent?.trim() === String(nextPage)) return btn;
-      }
-      return null;
-    }, targetPage);
-
-    if (!pageButton) return false;
-    await (pageButton.asElement() as any).click();
+    const clicked = await evaluateString<boolean>(
+      page,
+      `(() => {
+        const nextPage = ${targetPage};
+        const buttons = document.querySelectorAll('a.pagination_btn_page__utqBz, a[class*="pagination_btn"]');
+        for (let i = 0; i < buttons.length; i++) {
+          const btn = buttons[i];
+          const text = btn.textContent ? btn.textContent.trim() : '';
+          if (text === String(nextPage)) {
+            btn.click();
+            return true;
+          }
+        }
+        return false;
+      })()`
+    );
+    if (!clicked) return false;
   } catch {
     return false;
   }
@@ -462,11 +312,14 @@ async function goToNextPageForProductId(page: any, targetPage: number): Promise<
 async function checkRankByProductId(
   page: any,
   keyword: string,
-  productId: string,
+  productId: string | null,
   logPrefix: string
 ): Promise<{
   rank: number | null;
+  nvMid: string | null;
+  contentsId: string | null;
   catalogNvMid: string | null;
+  chnlProdNo: string | null;
   productName: string | null;
   page: number | null;
   isAd: boolean;
@@ -488,7 +341,10 @@ async function checkRankByProductId(
     const blocked = await isBlocked(page);
     return {
       rank: null,
+      nvMid: null,
+      contentsId: null,
       catalogNvMid: null,
+      chnlProdNo: null,
       productName: null,
       page: null,
       isAd: false,
@@ -516,7 +372,10 @@ async function checkRankByProductId(
       if (!moved) {
       return {
         rank: null,
+        nvMid: null,
+        contentsId: null,
         catalogNvMid: null,
+        chnlProdNo: null,
         productName: null,
         page: null,
         isAd: false,
@@ -537,7 +396,10 @@ async function checkRankByProductId(
       if (await isBlocked(page)) {
       return {
         rank: null,
+        nvMid: null,
+        contentsId: null,
         catalogNvMid: null,
+        chnlProdNo: null,
         productName: null,
         page: currentPage,
         isAd: false,
@@ -575,10 +437,20 @@ async function checkRankByProductId(
       if (result.shippingFee !== null) console.log(`${logPrefix}   🚚 배송비: ${result.shippingFee === 0 ? '무료' : result.shippingFee.toLocaleString() + '원'}`);
       if (result.keywordName) console.log(`${logPrefix}   📝 상품명: ${result.keywordName}`);
       if (result.tradeName) console.log(`${logPrefix}   🏪 상호명: ${result.tradeName}`);
+      if (result.nvMid) console.log(`${logPrefix}   🆔 nv_mid(bridge): ${result.nvMid}`);
+      if (result.contentsId)
+        console.log(`${logPrefix}   🆔 contents-id: ${result.contentsId}`);
+      if (result.catalogNvMid)
+        console.log(`${logPrefix}   📎 catalog_nv_mid: ${result.catalogNvMid}`);
+      if (result.chnlProdNo)
+        console.log(`${logPrefix}   📎 chnl_prod_no: ${result.chnlProdNo}`);
 
       return {
         rank: actualRank,
+        nvMid: result.nvMid,
+        contentsId: result.contentsId,
         catalogNvMid: result.catalogNvMid,
+        chnlProdNo: result.chnlProdNo,
         productName: result.productName,
         page: currentPage,
         isAd: result.isAd,
@@ -602,7 +474,10 @@ async function checkRankByProductId(
 
   return {
     rank: null,
+    nvMid: null,
+    contentsId: null,
     catalogNvMid: null,
+    chnlProdNo: null,
     productName: null,
     page: null,
     isAd: false,
@@ -645,7 +520,7 @@ export interface ParallelRankResult {
   keyword: string;
   productName?: string;
   mid: string | null;
-  midSource: 'direct' | 'catalog' | 'failed';
+  midSource: 'nv_mid' | 'contents_id' | 'catalog_nv_mid' | 'product_id' | 'failed';
   rank: RankResult | null;
   duration: number;
   error?: string;
@@ -691,10 +566,12 @@ export class ParallelRankChecker {
 
       browser = connection.browser;
       page = connection.page;
-      
+
+      await injectEvaluatePolyfill(page);
+
       // 뷰포트 크기 설정 (더 크게)
       await page.setViewport({ width: 1920, height: 1080 });
-      
+
       // 페이지가 로드될 때까지 대기하여 하얀 화면 최소화
       await page.goto('about:blank', { waitUntil: 'domcontentloaded' }).catch(() => {});
 
@@ -711,6 +588,7 @@ export class ParallelRankChecker {
       // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
       // ✅ ProductId 방식만 사용 (URL 직접 방문 제거)
       // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      const nvMidFromUrl = extractNvMidFromUrl(request.url);
       const productId = extractProductIdFromUrl(request.url);
 
       if (!productId) {
@@ -727,7 +605,9 @@ export class ParallelRankChecker {
         };
       }
 
-      console.log(`${logPrefix} 🚀 ProductId 방식: ${productId}`);
+      console.log(
+        `${logPrefix} 🚀 순위체크: productId=${productId ?? '-'} nv_mid=${nvMidFromUrl ?? '-'}`
+      );
 
       const result = await checkRankByProductId(page, request.keyword, productId, logPrefix);
 
@@ -743,9 +623,29 @@ export class ParallelRankChecker {
         console.log(`${logPrefix} ❌ ${result.error || '미발견'} (${Math.round(duration / 1000)}초)`);
       }
 
+      const effectiveNvMid = result.nvMid || nvMidFromUrl;
+      const storedMid = resolveStoredMid(
+        effectiveNvMid,
+        result.contentsId,
+        result.catalogNvMid,
+        productId
+      );
+      const catalogMid = result.catalogNvMid;
+      const channelProductNo = result.chnlProdNo || productId;
+
+      if (result.rank) {
+        console.log(
+          `${logPrefix} 📦 저장 ID 후보: nv_mid=${effectiveNvMid ?? '-'} contentsId=${result.contentsId ?? '-'} catalog_mid=${catalogMid ?? '-'} channel_product_no=${channelProductNo ?? '-'} → mid=${storedMid ?? '-'}`
+        );
+      }
+
       // RankResult 형식으로 변환
       const rankResult: RankResult | null = result.rank ? {
-        mid: result.catalogNvMid || productId,
+        mid: storedMid || '',
+        catalogMid,
+        channelProductNo,
+        contentsId: result.contentsId,
+        nvMid: effectiveNvMid,
         productName: result.productName || request.productName || '',
         totalRank: result.rank,
         organicRank: result.isAd ? -1 : result.rank,
@@ -767,8 +667,14 @@ export class ParallelRankChecker {
         url: request.url,
         keyword: request.keyword,
         productName: result.productName || request.productName,
-        mid: result.catalogNvMid || productId,
-        midSource: result.catalogNvMid ? 'catalog' : 'direct',
+        mid: storedMid,
+        midSource: midSourceLabel(
+          storedMid,
+          effectiveNvMid,
+          result.contentsId,
+          result.catalogNvMid,
+          productId
+        ),
         rank: rankResult,
         duration,
         blocked: result.blocked,

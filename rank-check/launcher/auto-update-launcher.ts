@@ -1,41 +1,38 @@
 #!/usr/bin/env npx tsx
 /**
- * 자동 업데이트 런처 (작업 감시 모드)
+ * 자동 업데이트 런처 (쇼핑 순위체크 전용, 작업 감시 모드)
  *
- * 기능:
- * - 작업 큐(sellermate_keywords_navershopping)를 감시하여 즉시 처리
- * - 작업 있으면: 처리 완료 → 5초 쿨다운 → 다음 배치
- * - 작업 없으면: 1분 대기 후 재확인
- * - 18분마다 Git 업데이트 확인 및 pull
+ * - 5분마다 Git 업데이트 확인 및 pull
+ * - 작업 큐 감시 → check-batch-worker-pool 실행
  *
- * 사용법:
+ * 통합(쇼핑+쿠팡+플레이스) 원격 실행은 remote-watch-launcher.ts / start-remote.bat 사용
+ *
  *   npx tsx rank-check/launcher/auto-update-launcher.ts
  */
 
 import 'dotenv/config';
-import { exec, spawn, ChildProcess } from 'child_process';
-import { promisify } from 'util';
+import { spawn, ChildProcess } from 'child_process';
 import * as os from 'os';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
+import {
+  GIT_CHECK_INTERVAL_MS,
+  GIT_BRANCH,
+  syncGitRepo,
+  installDepsIfNeeded,
+} from './git-sync';
 
-const execAsync = promisify(exec);
-
-// ESM 호환 __dirname
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// 설정
-const IDLE_WAIT_MS = 5 * 1000; // 작업 없을 때 대기 시간 (5초)
-const BATCH_COOLDOWN_MS = 3 * 1000; // 5초 → 3초 (40% 감소, 배치 완료 후 쿨다운)
-const GIT_CHECK_INTERVAL_MS = 18 * 60 * 1000; // Git 체크 주기 (18분)
-const GIT_BRANCH = 'main';
+const IDLE_WAIT_MS = 5 * 1000;
+const BATCH_COOLDOWN_MS = 3 * 1000;
 const PROJECT_ROOT = path.resolve(__dirname, '../..');
 
-// 상태
 let runCount = 0;
 let childProcess: ChildProcess | null = null;
 let lastGitCheck = 0;
+let lastKnownHash = '';
 const startTime = new Date();
 
 function log(message: string): void {
@@ -54,7 +51,7 @@ function log(message: string): void {
 function logHeader(): void {
   console.log('');
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log('🚀 자동 업데이트 런처 시작 (작업 감시 모드)');
+  console.log('🚀 자동 업데이트 런처 (쇼핑 순위체크 전용)');
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   console.log(`📍 호스트: ${os.hostname()}`);
   console.log(`📁 경로: ${PROJECT_ROOT}`);
@@ -66,61 +63,69 @@ function logHeader(): void {
   console.log('');
 }
 
-/**
- * Git 업데이트 확인 및 pull
- */
 async function checkForUpdates(): Promise<boolean> {
-  try {
-    log('🔍 Git 업데이트 확인 중...');
+  const before = lastKnownHash;
+  const result = await syncGitRepo(PROJECT_ROOT, { branch: GIT_BRANCH });
 
-    // fetch
-    await execAsync(`git -C "${PROJECT_ROOT}" fetch origin ${GIT_BRANCH}`);
+  if (result.localHash) {
+    lastKnownHash = result.localHash;
+  }
 
-    // 변경사항 확인
-    const { stdout: diffOutput } = await execAsync(
-      `git -C "${PROJECT_ROOT}" diff HEAD origin/${GIT_BRANCH} --stat`
-    );
-
-    if (!diffOutput.trim()) {
-      log('✅ 최신 상태입니다.');
-      return false;
+  if (result.updated) {
+    log(`📦 Git 업데이트:\n${result.message}`);
+    if (before && result.localHash) {
+      try {
+        await installDepsIfNeeded(PROJECT_ROOT, before, result.localHash);
+      } catch (error: unknown) {
+        const msg = error instanceof Error ? error.message : String(error);
+        log(`⚠️ npm install: ${msg}`);
+      }
     }
-
-    log(`📦 업데이트 발견:\n${diffOutput}`);
-
-    // pull
-    const { stdout: pullOutput } = await execAsync(
-      `git -C "${PROJECT_ROOT}" pull origin ${GIT_BRANCH}`
-    );
-    log(`🔄 Git Pull 완료:\n${pullOutput}`);
-
     return true;
-  } catch (error: any) {
-    log(`⚠️ Git 업데이트 실패: ${error.message}`);
-    return false;
+  }
+
+  if (!result.message.includes('실패')) {
+    log(`✅ Git ${result.message}`);
+  } else {
+    log(`⚠️ ${result.message}`);
+  }
+  return false;
+}
+
+async function maybeSyncGit(): Promise<void> {
+  const now = Date.now();
+  if (now - lastGitCheck < GIT_CHECK_INTERVAL_MS) return;
+  lastGitCheck = now;
+  const updated = await checkForUpdates();
+  if (updated) {
+    log('🔄 코드 업데이트됨 — 다음 배치부터 반영');
   }
 }
 
-/**
- * 순위 체크 실행 (자식 프로세스)
- * @returns 처리된 키워드 수 (0이면 작업 없음)
- */
 async function runRankCheck(): Promise<number> {
   return new Promise((resolve) => {
     log('🔍 순위 체크 시작...');
 
-    const scriptPath = path.join(PROJECT_ROOT, 'rank-check', 'batch', 'check-batch-worker-pool.ts');
+    const scriptPath = path.join(
+      PROJECT_ROOT,
+      'rank-check',
+      'batch',
+      'check-batch-keywords.ts'
+    );
 
     let output = '';
 
-    // tsx로 스크립트 실행
-    childProcess = spawn('npx', ['tsx', scriptPath], {
-      cwd: PROJECT_ROOT,
-      stdio: ['inherit', 'pipe', 'inherit'],
-      shell: true,
-    });
+    childProcess = spawn(
+      'npx',
+      ['tsx', scriptPath, '--limit=1', '--once'],
+      {
+        cwd: PROJECT_ROOT,
+        stdio: ['inherit', 'pipe', 'inherit'],
+        shell: true,
+        env: { ...process.env, BATCH_SIZE: '1', CLAIM_LIMIT: '1' },
+      }
+    );
 
-    // stdout에서 처리된 개수 파싱
     childProcess.stdout?.on('data', (data: Buffer) => {
       const text = data.toString();
       process.stdout.write(text);
@@ -130,7 +135,6 @@ async function runRankCheck(): Promise<number> {
     childProcess.on('close', (code) => {
       childProcess = null;
 
-      // "총 처리: N개" 또는 "N개 키워드 할당" 패턴에서 개수 추출
       let processedCount = 0;
       const matchTotal = output.match(/총 처리:\s*(\d+)개/);
       const matchAssign = output.match(/(\d+)개 키워드 할당/);
@@ -161,39 +165,21 @@ async function runRankCheck(): Promise<number> {
   });
 }
 
-/**
- * 메인 루프 1회 실행
- * @returns 처리된 키워드 수
- */
 async function runOnce(): Promise<number> {
   runCount++;
-
   console.log('');
   console.log(`━━━━━━━━━━ [${runCount}회차 실행] ━━━━━━━━━━`);
 
   try {
-    // Git 업데이트 체크 (시간 기반)
-    const now = Date.now();
-    if (now - lastGitCheck >= GIT_CHECK_INTERVAL_MS) {
-      lastGitCheck = now;
-      const updated = await checkForUpdates();
-      if (updated) {
-        log('🔄 코드 업데이트됨 - 변경사항이 다음 실행에 반영됩니다.');
-      }
-    }
-
-    // 순위 체크 실행
-    const processedCount = await runRankCheck();
-    return processedCount;
-  } catch (error: any) {
-    log(`🚨 에러 발생: ${error.message}`);
+    await maybeSyncGit();
+    return await runRankCheck();
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : String(error);
+    log(`🚨 에러 발생: ${msg}`);
     return 0;
   }
 }
 
-/**
- * 통계 출력
- */
 function printStats(): void {
   const uptime = Math.round((Date.now() - startTime.getTime()) / 1000);
   const hours = Math.floor(uptime / 3600);
@@ -211,18 +197,12 @@ function printStats(): void {
   console.log('');
 }
 
-/**
- * 종료 핸들러
- */
 function setupShutdownHandler(): void {
   const shutdown = (signal: string) => {
     log(`\n${signal} 신호 수신. 종료 중...`);
-
-    // 자식 프로세스 종료
     if (childProcess) {
       childProcess.kill('SIGTERM');
     }
-
     printStats();
     process.exit(0);
   };
@@ -231,36 +211,29 @@ function setupShutdownHandler(): void {
   process.on('SIGTERM', () => shutdown('SIGTERM'));
 }
 
-/**
- * 대기 함수
- */
 function delay(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/**
- * 메인 함수 - 작업 감시 루프
- */
 async function main(): Promise<void> {
   logHeader();
   setupShutdownHandler();
 
-  log('🔄 작업 감시 모드로 실행합니다. (Ctrl+C로 종료)');
-  log('   - 작업 있으면: 즉시 처리 → 5초 쿨다운 → 다음 배치');
-  log('   - 작업 없으면: 1분 대기 후 재확인');
+  log('🔄 작업 감시 모드 (Ctrl+C 종료)');
+  log(`   Git: ${GIT_CHECK_INTERVAL_MS / 60000}분마다 fetch/pull`);
   console.log('');
 
-  // 무한 루프로 작업 감시
+  lastGitCheck = 0;
+  await maybeSyncGit();
+
   while (true) {
     const processedCount = await runOnce();
 
     if (processedCount === 0) {
-      // 작업 없음 → 1분 대기 후 재확인
       log(`⏳ 작업 없음. ${IDLE_WAIT_MS / 1000}초 후 재확인...`);
       await delay(IDLE_WAIT_MS);
     } else {
-      // 작업 있었음 → 짧은 쿨다운 후 즉시 다음 배치
-      log(`⚡ ${BATCH_COOLDOWN_MS / 1000}초 쿨다운 후 다음 배치 시작...`);
+      log(`⚡ ${BATCH_COOLDOWN_MS / 1000}초 쿨다운 후 다음 배치...`);
       await delay(BATCH_COOLDOWN_MS);
     }
   }
@@ -268,6 +241,5 @@ async function main(): Promise<void> {
 
 main().catch((error) => {
   console.error('🚨 치명적 에러:', error.message);
-  console.error(error.stack);
   process.exit(1);
 });
