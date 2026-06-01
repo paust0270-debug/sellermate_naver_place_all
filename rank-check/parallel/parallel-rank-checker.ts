@@ -155,6 +155,7 @@ async function findRankByProductIdOnPage(page: any, targetProductId: string): Pr
   productImageUrl: string | null;
   price: number | null;
   shippingFee: number | null;
+  tradeName: string | null;
 }> {
   return await page.evaluate((targetId: string) => {
     const result = {
@@ -172,6 +173,7 @@ async function findRankByProductIdOnPage(page: any, targetProductId: string): Pr
       price: null as number | null,
       shippingFee: null as number | null,
       keywordName: null as string | null,
+      tradeName: null as string | null,
     };
 
     const anchors = document.querySelectorAll('a[data-shp-contents-id][data-shp-contents-rank][data-shp-contents-dtl]');
@@ -196,6 +198,7 @@ async function findRankByProductIdOnPage(page: any, targetProductId: string): Pr
         let chnlProdNo: string | null = null;
         let catalogNvMid: string | null = null;
         let prodName: string | null = null;
+        let chnlNm: string | null = null;
 
         for (const item of parsed) {
           if (item.key === 'chnl_prod_no' && item.value) {
@@ -206,6 +209,9 @@ async function findRankByProductIdOnPage(page: any, targetProductId: string): Pr
           }
           if (item.key === 'prod_nm' && item.value) {
             prodName = String(item.value).substring(0, 60);
+          }
+          if ((item.key === 'chnl_nm' || item.key === 'mall_nm') && item.value) {
+            chnlNm = String(item.value).trim();
           }
         }
 
@@ -299,6 +305,28 @@ async function findRankByProductIdOnPage(page: any, targetProductId: string): Pr
                 }
               }
             }
+
+            // 상호명 추출 (스마트스토어/브랜드스토어 outlink 링크)
+            const storeLinkSelectors = [
+              'a[href*="smartstore.naver.com/inflow/outlink"]',
+              'a[href*="brand.naver.com/inflow/outlink"]',
+              'a.iMhVFYLc',
+              'a[class*="iMhVFYLc"]',
+            ];
+            for (const sel of storeLinkSelectors) {
+              const storeEl = productItem.querySelector(sel);
+              if (storeEl) {
+                const text = storeEl.textContent?.trim();
+                if (text && text.length > 0 && text.length <= 50) {
+                  result.tradeName = text;
+                  break;
+                }
+              }
+            }
+          }
+
+          if (!result.tradeName && chnlNm) {
+            result.tradeName = chnlNm;
           }
           
           return result;
@@ -451,6 +479,8 @@ async function checkRankByProductId(
   productImageUrl: string | null;
   price: number | null;
   shippingFee: number | null;
+  keywordName: string | null;
+  tradeName: string | null;
 }> {
   // 쇼핑탭 진입
   const shoppingReady = await enterShoppingTabForProductId(page, keyword, logPrefix);
@@ -464,6 +494,15 @@ async function checkRankByProductId(
       isAd: false,
       blocked,
       error: blocked ? '보안 페이지' : '쇼핑탭 진입 실패',
+      wishCount: null,
+      reviewCount: null,
+      starCount: null,
+      monthCount: null,
+      productImageUrl: null,
+      price: null,
+      shippingFee: null,
+      keywordName: null,
+      tradeName: null,
     };
   }
 
@@ -491,6 +530,7 @@ async function checkRankByProductId(
         price: null,
         shippingFee: null,
         keywordName: null,
+        tradeName: null,
       };
       }
 
@@ -511,6 +551,7 @@ async function checkRankByProductId(
         price: null,
         shippingFee: null,
         keywordName: null,
+        tradeName: null,
       };
       }
     }
@@ -533,6 +574,7 @@ async function checkRankByProductId(
       if (result.price !== null) console.log(`${logPrefix}   💰 현재가: ${result.price.toLocaleString()}원`);
       if (result.shippingFee !== null) console.log(`${logPrefix}   🚚 배송비: ${result.shippingFee === 0 ? '무료' : result.shippingFee.toLocaleString() + '원'}`);
       if (result.keywordName) console.log(`${logPrefix}   📝 상품명: ${result.keywordName}`);
+      if (result.tradeName) console.log(`${logPrefix}   🏪 상호명: ${result.tradeName}`);
 
       return {
         rank: actualRank,
@@ -549,6 +591,7 @@ async function checkRankByProductId(
         price: result.price,
         shippingFee: result.shippingFee,
         keywordName: result.keywordName,
+        tradeName: result.tradeName,
       };
     }
 
@@ -573,6 +616,7 @@ async function checkRankByProductId(
     price: null,
     shippingFee: null,
     keywordName: null,
+    tradeName: null,
   };
 }
 
@@ -716,6 +760,7 @@ export class ParallelRankChecker {
         price: result.price,
         shippingFee: result.shippingFee,
         keywordName: result.keywordName,
+        tradeName: result.tradeName,
       } : null;
 
       return {

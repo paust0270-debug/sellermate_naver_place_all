@@ -36,7 +36,7 @@ if errorlevel 1 (
 )
 echo.
 
-echo Running: Coupang -^> Shopping -^> Place paid -^> Place free -^> Shop free (loop)
+echo Running: Shopping paid -^> Coupang -^> Place paid -^> Place free -^> Shop free -^> Coupang free (loop)
 echo Stop: press Ctrl+%%C
 echo ==================================================
 echo.

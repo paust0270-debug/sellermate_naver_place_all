@@ -1,8 +1,7 @@
 #!/usr/bin/env npx tsx
 /**
- * 쇼핑 + 쇼핑트레픽 + 쿠팡 + 플레이스 통합 러너 (이 폴더만 사용)
- * - 순차: 쇼핑(유료) → 쇼핑트레픽(유료) → 쿠팡(유료) → 플레이스(유료) → 플레이스(무료) → 쇼핑(무료) → 쿠팡(무료) → 반복
- * - 쇼핑트레픽: shopping-traffic/unified-runner.ts (이 폴더 내장, 워커 1개 --once)
+ * 쇼핑 + 쿠팡 + 플레이스 통합 러너 (이 폴더만 사용)
+ * - 순차: 쇼핑(유료) → 쿠팡(유료) → 플레이스(유료) → 플레이스(무료) → 쇼핑(무료) → 쿠팡(무료) → 반복
  * - 동시에 여러 창 안 뜨도록 단일 실행 잠금 적용
  */
 
@@ -87,11 +86,11 @@ function run(
   });
 }
 
-async function runShoppingTrafficOnce(): Promise<number> {
-  console.log('\n🚀 [통합] 쇼핑트레픽(유료) 1건 처리 시작...\n');
-  const { command, args } = getTsxArgs('shopping-traffic/unified-runner.ts', ['--once']);
-  const code = await run(ROOT, command, args, { PARALLEL_BROWSERS: '1' });
-  console.log('\n🚀 [통합] 쇼핑트레픽(유료) 1건 처리 종료 (exit code:', code, ')\n');
+async function runShoppingOnce(): Promise<number> {
+  console.log('\n🛒 [통합] 쇼핑 1건 처리 시작...\n');
+  const { command, args } = getTsxArgs('rank-check/batch/check-batch-keywords.ts', ['--limit=1', '--once']);
+  const code = await run(ROOT, command, args, { BATCH_SIZE: '1' });
+  console.log('\n🛒 [통합] 쇼핑 1건 처리 종료 (exit code:', code, ')\n');
   return code;
 }
 
@@ -100,14 +99,6 @@ async function runCoupangOnce(): Promise<number> {
   const { command, args } = getTsxArgs('coupang-check/coupang-rank-processor.ts', ['--once']);
   const code = await run(ROOT, command, args);
   console.log('\n🛍️ [통합] 쿠팡 1건 처리 종료 (exit code:', code, ')\n');
-  return code;
-}
-
-async function runShoppingOnce(): Promise<number> {
-  console.log('\n🛒 [통합] 쇼핑 1건 처리 시작...\n');
-  const { command, args } = getTsxArgs('rank-check/batch/check-batch-keywords.ts', ['--limit=1', '--once']);
-  const code = await run(ROOT, command, args, { BATCH_SIZE: '1' });
-  console.log('\n🛒 [통합] 쇼핑 1건 처리 종료 (exit code:', code, ')\n');
   return code;
 }
 
@@ -164,8 +155,8 @@ async function main() {
   });
 
   console.log('═══════════════════════════════════════════════════════');
-  console.log('  쇼핑 + 쇼핑트레픽 + 쿠팡 + 플레이스 통합 러너 (순차 1건씩 무한 루프)');
-  console.log('  쇼핑(유료) → 쇼핑트레픽(유료) → 쿠팡(유료) → 플레이스(유료) → 플레이스(무료) → 쇼핑(무료) → 쿠팡(무료)');
+  console.log('  쇼핑 + 쿠팡 + 플레이스 통합 러너 (순차 1건씩 무한 루프)');
+  console.log('  쇼핑(유료) → 쿠팡(유료) → 플레이스(유료) → 플레이스(무료) → 쇼핑(무료) → 쿠팡(무료)');
   console.log('  종료: Ctrl+C');
   console.log('═══════════════════════════════════════════════════════\n');
 
@@ -175,11 +166,10 @@ async function main() {
   while (true) {
     round++;
     console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    console.log(`  [통합] 라운드 ${round} — 쇼핑(유료) → 쇼핑트레픽(유료) → 쿠팡(유료) → 플레이스(유료) → 플레이스(무료) → 쇼핑(무료) → 쿠팡(무료)`);
+    console.log(`  [통합] 라운드 ${round} — 쇼핑(유료) → 쿠팡(유료) → 플레이스(유료) → 플레이스(무료) → 쇼핑(무료) → 쿠팡(무료)`);
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
     await runShoppingOnce();
-    await runShoppingTrafficOnce();
     await runCoupangOnce();
     await runPlaceSlotOnce();
     await runPlaceFreeOnce();

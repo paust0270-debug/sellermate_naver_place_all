@@ -38,6 +38,7 @@ export interface RankResult {
   price?: number | null;  // 현재가
   shippingFee?: number | null;  // 배송비 (무료면 0)
   keywordName?: string | null;  // 상품명 (이미지 alt 속성)
+  tradeName?: string | null;  // 상호명 (스마트스토어 링크 텍스트)
 }
 
 export interface SaveResult {
@@ -234,6 +235,7 @@ export async function saveRankToSlotNaver(
         rank_date: now,
         created_at: now,
         keyword_name: rankResult?.keywordName || null,
+        trade_name: rankResult?.tradeName || null,
         // 상세 데이터 (셀러메이트 히스토리 컬럼)
         price: rankResult?.price != null ? parseInt(String(rankResult.price), 10) : null,
         price_sale: rankResult?.shippingFee != null && rankResult?.shippingFee !== undefined ? parseInt(String(rankResult.shippingFee), 10) : null,
