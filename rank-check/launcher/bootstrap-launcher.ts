@@ -16,6 +16,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 import { syncGitRepo, GIT_CHECK_INTERVAL_MS } from './git-sync';
+import { loadProjectEnvFile, buildEnvWithProjectFile } from '../utils/load-project-env';
 
 // ============ 설정 ============
 const GIT_REPO =
@@ -56,32 +57,11 @@ function exitWithPause(code: number): never {
   process.exit(code);
 }
 
-/** 설치 폴더 .env 파싱 (자식 프로세스에 전달, Legacy JWT 덮어쓰기 방지) */
-function loadEnvFile(envPath: string): Record<string, string> {
-  const out: Record<string, string> = {};
-  if (!fs.existsSync(envPath)) return out;
-  const content = fs.readFileSync(envPath, 'utf8');
-  for (const line of content.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-    const eq = trimmed.indexOf('=');
-    if (eq <= 0) continue;
-    const key = trimmed.slice(0, eq).trim();
-    const value = trimmed.slice(eq + 1).trim();
-    if (key) out[key] = value;
-  }
-  return out;
-}
-
 function buildChildEnv(): NodeJS.ProcessEnv {
-  const envPath = path.join(INSTALL_DIR, '.env');
-  const fileEnv = loadEnvFile(envPath);
-  return {
-    ...process.env,
-    ...fileEnv,
+  return buildEnvWithProjectFile(INSTALL_DIR, {
     GIT_SYNC_HARD_RESET: '1',
     GIT_CHECK_INTERVAL_MS: String(5 * 60 * 1000),
-  };
+  });
 }
 
 /** 통합 러너 우선, 쇼핑 전용 auto-update는 최후 */
@@ -182,6 +162,44 @@ function runCommand(
   }
 }
 
+function normalizeGitRemoteUrl(url: string): string {
+  return url
+    .trim()
+    .replace(/\.git$/i, '')
+    .replace(/\/$/, '')
+    .toLowerCase()
+    .replace(/^git@github\.com:/, 'https://github.com/')
+    .replace(/^ssh:\/\/git@github\.com\//, 'https://github.com/');
+}
+
+/** 예전 Rank_Updator 등 잘못된 origin이면 sellermate 저장소로 교정 */
+function ensureGitOrigin(): void {
+  const gitDir = path.join(INSTALL_DIR, '.git');
+  if (!fs.existsSync(gitDir)) return;
+
+  let current = '';
+  try {
+    current = execSync('git config --get remote.origin.url', {
+      cwd: INSTALL_DIR,
+      encoding: 'utf8',
+      windowsHide: true,
+    }).trim();
+  } catch {
+    current = '';
+  }
+
+  const want = normalizeGitRemoteUrl(GIT_REPO);
+  const have = normalizeGitRemoteUrl(current || '');
+
+  if (!have || have !== want) {
+    if (current) log(`Git origin 교정: ${current}`);
+    log(`→ ${GIT_REPO}`);
+    runCommand(`git remote set-url origin "${GIT_REPO}"`, { cwd: INSTALL_DIR });
+  } else {
+    log(`Git origin OK (${current})`);
+  }
+}
+
 // ============ 메인 ============
 async function main(): Promise<void> {
   console.log('');
@@ -225,6 +243,7 @@ async function main(): Promise<void> {
   const installParent = path.dirname(INSTALL_DIR);
 
   if (fs.existsSync(gitDir)) {
+    ensureGitOrigin();
     log('git fetch...');
     runCommand(`git fetch origin ${GIT_BRANCH}`, { cwd: INSTALL_DIR });
     log('git reset --hard...');
@@ -273,14 +292,19 @@ async function main(): Promise<void> {
     exitWithPause(1);
   }
 
-  const fileEnv = loadEnvFile(envPath);
+  const fileEnv = loadProjectEnvFile(INSTALL_DIR);
   if (!fileEnv.SUPABASE_URL || !fileEnv.SUPABASE_SERVICE_ROLE_KEY) {
     console.log('[오류] .env에 SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY가 필요합니다.');
     console.log(`  경로: ${envPath}`);
     exitWithPause(1);
   }
   if (fileEnv.SUPABASE_SERVICE_ROLE_KEY.startsWith('eyJ')) {
-    console.log('[경고] Legacy JWT service_role 키입니다. sb_secret_ 키로 교체하세요.');
+    console.log('');
+    console.log('[오류] Legacy JWT service_role 키(eyJ…) — Supabase에서 비활성화되었습니다.');
+    console.log(`  .env: ${envPath}`);
+    console.log('  → Supabase 대시보드 → API Keys → sb_secret_… 를 복사해 SUPABASE_SERVICE_ROLE_KEY 에 넣으세요.');
+    console.log('  → 정상 PC의 .env 를 통째로 복사해도 됩니다.');
+    exitWithPause(1);
   }
 
   // 5. 의존성 설치
@@ -358,6 +382,17 @@ async function main(): Promise<void> {
     console.log('[오류] 런처 스크립트를 찾을 수 없습니다.');
     console.log('  GitHub main에 최신 코드가 push 되었는지 확인하세요.');
     console.log(`  설치 폴더: ${INSTALL_DIR}`);
+    exitWithPause(1);
+  }
+
+  if (!isUnifiedLauncher(launcherRel)) {
+    console.log('');
+    console.log('[오류] 구버전 저장소/런처(auto-update)만 있습니다. 통합 러너를 사용할 수 없습니다.');
+    console.log(`  현재 Git origin이 ${GIT_REPO} 인지 확인 후 EXE를 다시 실행하세요.`);
+    console.log('  수동 교정:');
+    console.log(`    cd "${INSTALL_DIR}"`);
+    console.log(`    git remote set-url origin ${GIT_REPO}`);
+    console.log(`    git fetch origin ${GIT_BRANCH} && git reset --hard origin/${GIT_BRANCH}`);
     exitWithPause(1);
   }
 

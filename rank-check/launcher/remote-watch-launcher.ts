@@ -11,7 +11,6 @@
  *   npx tsx rank-check/launcher/remote-watch-launcher.ts
  *   start-remote.bat
  */
-import 'dotenv/config';
 import { spawn, ChildProcess } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -23,6 +22,7 @@ import {
   syncGitRepo,
   installDepsIfNeeded,
 } from './git-sync';
+import { buildEnvWithProjectFile } from '../utils/load-project-env';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '../..');
@@ -54,6 +54,47 @@ function logHeader(): void {
   console.log(`🔧 Git 반영: ${GIT_HARD_RESET ? 'fetch + reset --hard' : 'fetch + pull'}`);
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   console.log('');
+}
+
+function runnerEnv(): NodeJS.ProcessEnv {
+  return buildEnvWithProjectFile(PROJECT_ROOT, {
+    GIT_SYNC_HARD_RESET: process.env.GIT_SYNC_HARD_RESET ?? '1',
+    GIT_CHECK_INTERVAL_MS: process.env.GIT_CHECK_INTERVAL_MS ?? String(GIT_CHECK_INTERVAL_MS),
+  });
+}
+
+function runSupabaseVerify(): Promise<boolean> {
+  const verifyScript = path.join(PROJECT_ROOT, 'rank-check', 'scripts', 'verify-supabase-env.ts');
+  const tsxCli = path.join(PROJECT_ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs');
+  if (!fs.existsSync(verifyScript) || !fs.existsSync(tsxCli)) {
+    return Promise.resolve(true);
+  }
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [tsxCli, verifyScript], {
+      cwd: PROJECT_ROOT,
+      stdio: 'inherit',
+      shell: false,
+      env: runnerEnv(),
+    });
+    child.on('close', (code) => resolve(code === 0));
+    child.on('error', () => resolve(false));
+  });
+}
+
+async function ensureSupabaseBeforeWorker(): Promise<void> {
+  const envPath = path.join(PROJECT_ROOT, '.env');
+  while (!isShuttingDown) {
+    log('🔍 Supabase 연결 확인...');
+    if (await runSupabaseVerify()) {
+      log('✅ Supabase 연결 OK');
+      return;
+    }
+    log('❌ Supabase 연결 실패 — 30초 후 재시도');
+    log(`   .env: ${envPath}`);
+    log('   → 정상 PC의 .env(SUPABASE_URL, sb_secret_ 키)를 복사하세요.');
+    log('   → Legacy JWT(eyJ…) / 방화벽(*.supabase.co) 확인');
+    await new Promise((r) => setTimeout(r, 30_000));
+  }
 }
 
 function getTsxCommand(scriptPath: string): { command: string; args: string[] } {
@@ -156,7 +197,7 @@ function startWorker(): void {
     cwd: PROJECT_ROOT,
     stdio: 'inherit',
     shell: false,
-    env: { ...process.env },
+    env: runnerEnv(),
   });
 
   worker.on('close', (code) => {
@@ -206,6 +247,8 @@ async function main(): Promise<void> {
 
   log('🔍 시작 시 Git 동기화...');
   await applyGitSync(true);
+
+  await ensureSupabaseBeforeWorker();
 
   startWorker();
 
