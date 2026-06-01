@@ -6,3 +6,7 @@ node_modules/
 .env.local
 .env.*.local
 .unified-runner.lock
+
+# Portable deploy bundle (contains .env with secrets)
+SellermatePortable/
+deploy/local.env

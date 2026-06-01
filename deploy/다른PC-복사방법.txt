@@ -1,0 +1,19 @@
+■ 다른 PC에서 쓰는 방법 (설정 몰라도 됨)
+
+1) 이 PC(개발 PC)에서 프로젝트 루트의 prepare-portable.bat 더블클릭
+   → SellermatePortable 폴더가 생성됩니다.
+
+2) SellermatePortable 폴더 통째로 USB/카톡/공유폴더로 복사
+
+3) 새 PC 준비
+   - Node.js LTS 설치
+   - Git 설치
+
+4) 새 PC에 폴더 붙여넣기 (둘 중 하나)
+   A) D:\naverrank 에 통째로 덮어쓰기  (EXE 쓸 때)
+   B) 아무 위치 (예: D:\SellermatePortable) + START.bat 실행
+
+5) START.bat 더블클릭 → 끝
+
+※ 쿠팡 순위는 USB 테더링/ADB 있는 PC만 실행됩니다.
+※ 키/비밀번호는 Git에 올라가지 않습니다 (deploy/local.env 만 로컬).
