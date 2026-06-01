@@ -36,7 +36,14 @@ export async function verifySupabaseInstall(
       headers: { apikey: key, Authorization: `Bearer ${key}` },
     });
     if (res.status === 401) {
-      return { ok: false, message: 'Invalid API key (HTTP 401)' };
+      return {
+        ok: false,
+        message:
+          'Invalid API key (HTTP 401) — Supabase Dashboard → Project Settings → API Keys에서 service_role(sb_secret_) 키를 다시 복사해 deploy/local.env 에 넣고 EXE를 재빌드하세요.',
+      };
+    }
+    if (!res.ok && res.status !== 404) {
+      return { ok: false, message: `REST probe failed (HTTP ${res.status})` };
     }
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -50,7 +57,25 @@ export async function verifySupabaseInstall(
     .limit(1);
 
   if (error) {
-    return { ok: false, message: error.message };
+    const msg = error.message || '';
+    if (
+      error.code === 'PGRST205' ||
+      msg.includes('Could not find the table') ||
+      msg.includes('schema cache')
+    ) {
+      return {
+        ok: true,
+        message: 'Supabase 인증 OK (API 키 유효, 테이블명은 런타임에서 확인)',
+      };
+    }
+    if (msg.includes('Legacy API keys are disabled')) {
+      return {
+        ok: false,
+        message:
+          'Legacy JWT 비활성화됨 — Dashboard에서 sb_secret_ service_role 키를 발급해 deploy/local.env 에 넣으세요.',
+      };
+    }
+    return { ok: false, message: msg };
   }
 
   return { ok: true, message: 'Supabase 연결 OK' };

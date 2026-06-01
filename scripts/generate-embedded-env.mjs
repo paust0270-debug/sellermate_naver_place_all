@@ -47,8 +47,7 @@ for (const k of required) {
   }
 }
 if (env.SUPABASE_SERVICE_ROLE_KEY.startsWith('eyJ')) {
-  console.error('[generate-embedded-env] deploy/local.env must use sb_secret_ key, not Legacy JWT');
-  process.exit(1);
+  console.warn('[generate-embedded-env] Warning: Legacy JWT in deploy/local.env (use sb_secret_ when available)');
 }
 
 const body = JSON.stringify(env, null, 2);

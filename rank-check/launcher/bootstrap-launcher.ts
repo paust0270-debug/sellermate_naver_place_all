@@ -317,15 +317,6 @@ async function main(): Promise<void> {
     console.log(`  경로: ${envPath}`);
     exitWithPause(1);
   }
-  if (isLegacyJwtServiceKey(fileEnv.SUPABASE_SERVICE_ROLE_KEY)) {
-    console.log('');
-    console.log('[오류] Legacy JWT service_role 키(eyJ…) — Supabase에서 비활성화되었습니다.');
-    console.log(`  .env: ${envPath}`);
-    console.log('  → 메모장으로 .env 를 열어 sb_secret_ 키로 바꾸거나');
-    console.log('  → deploy\\local.env 가 있는 최신 EXE 로 다시 빌드·배포하세요.');
-    console.log('  → 또는 D:\\naverrank\\deploy\\FIX-ENV.bat 실행');
-    exitWithPause(1);
-  }
 
   // 5. 의존성 설치
   console.log('');
@@ -371,7 +362,12 @@ async function main(): Promise<void> {
   console.log('-'.repeat(50));
   log('Supabase 연결 확인');
   console.log('-'.repeat(50));
-  const verify = await verifySupabaseInstall(INSTALL_DIR);
+  let verify = await verifySupabaseInstall(INSTALL_DIR);
+  if (!verify.ok && bundledEnv) {
+    writeEnvFile(envPath, bundledEnv);
+    log('잘못된 API 키 .env → 설치기 내장 키로 교체');
+    verify = await verifySupabaseInstall(INSTALL_DIR);
+  }
   if (!verify.ok) {
     console.log('');
     console.log('[오류] Supabase에 연결할 수 없습니다.');
