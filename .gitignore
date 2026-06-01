@@ -10,3 +10,10 @@ node_modules/
 # Portable deploy bundle (contains .env with secrets)
 SellermatePortable/
 deploy/local.env
+
+# Built installer artifacts (rebuild with rank-check/launcher/build-exe.bat)
+dist/*.exe
+dist/*.cmd
+dist/ipRotation.js
+dist/run-unified.js
+!dist/bootstrap-launcher.cjs
