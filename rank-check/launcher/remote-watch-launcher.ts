@@ -23,6 +23,7 @@ import {
   installDepsIfNeeded,
 } from './git-sync';
 import { buildEnvWithProjectFile } from '../utils/load-project-env';
+import { verifySupabaseInstall } from '../utils/verify-supabase-install';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '../..');
@@ -63,36 +64,18 @@ function runnerEnv(): NodeJS.ProcessEnv {
   });
 }
 
-function runSupabaseVerify(): Promise<boolean> {
-  const verifyScript = path.join(PROJECT_ROOT, 'rank-check', 'scripts', 'verify-supabase-env.ts');
-  const tsxCli = path.join(PROJECT_ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs');
-  if (!fs.existsSync(verifyScript) || !fs.existsSync(tsxCli)) {
-    return Promise.resolve(true);
-  }
-  return new Promise((resolve) => {
-    const child = spawn(process.execPath, [tsxCli, verifyScript], {
-      cwd: PROJECT_ROOT,
-      stdio: 'inherit',
-      shell: false,
-      env: runnerEnv(),
-    });
-    child.on('close', (code) => resolve(code === 0));
-    child.on('error', () => resolve(false));
-  });
-}
-
 async function ensureSupabaseBeforeWorker(): Promise<void> {
   const envPath = path.join(PROJECT_ROOT, '.env');
   while (!isShuttingDown) {
     log('🔍 Supabase 연결 확인...');
-    if (await runSupabaseVerify()) {
-      log('✅ Supabase 연결 OK');
+    const verify = await verifySupabaseInstall(PROJECT_ROOT);
+    if (verify.ok) {
+      log(`✅ ${verify.message}`);
       return;
     }
-    log('❌ Supabase 연결 실패 — 30초 후 재시도');
+    log(`❌ Supabase 연결 실패 — ${verify.message}`);
     log(`   .env: ${envPath}`);
-    log('   → 정상 PC의 .env(SUPABASE_URL, sb_secret_ 키)를 복사하세요.');
-    log('   → Legacy JWT(eyJ…) / 방화벽(*.supabase.co) 확인');
+    log('   → 30초 후 재시도');
     await new Promise((r) => setTimeout(r, 30_000));
   }
 }
