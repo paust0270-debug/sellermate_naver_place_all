@@ -23,6 +23,7 @@ import {
   isLegacyJwtServiceKey,
   writeEnvFile,
 } from '../utils/load-project-env';
+import { EMBEDDED_INSTALL_ENV } from './embedded-install-env';
 
 // ============ 설정 ============
 const GIT_REPO =
@@ -277,19 +278,19 @@ async function main(): Promise<void> {
 
   const envPath = path.join(INSTALL_DIR, '.env');
   const envExample = path.join(INSTALL_DIR, '.env.example');
-  const bundledEnv = findBundledEnvForInstall(INSTALL_DIR);
+  const bundledEnv = findBundledEnvForInstall(INSTALL_DIR) ?? EMBEDDED_INSTALL_ENV;
 
   if (fs.existsSync(envPath)) {
     const current = loadProjectEnvFile(INSTALL_DIR);
     if (isLegacyJwtServiceKey(current.SUPABASE_SERVICE_ROLE_KEY) && bundledEnv) {
       writeEnvFile(envPath, bundledEnv);
-      log('예전 Legacy JWT .env → .env.defaults(복사본) 키로 자동 교체');
-    } else {
-      log('기존 .env 유지 (덮어쓰지 않음)');
+      log('예전 Legacy JWT .env → 설치기 내장 키로 자동 교체');
+    } else if (!isLegacyJwtServiceKey(current.SUPABASE_SERVICE_ROLE_KEY)) {
+      log('기존 .env 유지 (sb_secret_ 키 확인됨)');
     }
   } else if (bundledEnv) {
     writeEnvFile(envPath, bundledEnv);
-    log('.env 없음 → .env.defaults 에서 생성');
+    log('.env 없음 → 내장/기본 키로 생성');
   } else if (fs.existsSync(envExample)) {
     fs.copyFileSync(envExample, envPath);
     log('.env를 .env.example에서 복사했습니다.');
@@ -319,9 +320,9 @@ async function main(): Promise<void> {
     console.log('');
     console.log('[오류] Legacy JWT service_role 키(eyJ…) — Supabase에서 비활성화되었습니다.');
     console.log(`  .env: ${envPath}`);
-    console.log('  → 이 PC에 예전 D:\\naverrank\\.env 가 남아 있습니다.');
-    console.log('  → SellermatePortable 폴더의 .env.defaults 를 .env 로 복사하거나');
-    console.log('  → deploy\\FIX-ENV.bat 실행 / prepare-portable.bat 으로 폴더 다시 만드세요.');
+    console.log('  → 메모장으로 .env 를 열어 sb_secret_ 키로 바꾸거나');
+    console.log('  → deploy\\local.env 가 있는 최신 EXE 로 다시 빌드·배포하세요.');
+    console.log('  → 또는 D:\\naverrank\\deploy\\FIX-ENV.bat 실행');
     exitWithPause(1);
   }
 

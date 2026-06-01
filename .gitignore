@@ -11,10 +11,11 @@ node_modules/
 SellermatePortable/
 deploy/local.env
 .env.defaults
+rank-check/launcher/embedded-install-env.gen.ts
 
 # Built installer artifacts (rebuild with rank-check/launcher/build-exe.bat)
 dist/*.exe
 dist/*.cmd
 dist/ipRotation.js
 dist/run-unified.js
-!dist/bootstrap-launcher.cjs
+dist/bootstrap-launcher.cjs
