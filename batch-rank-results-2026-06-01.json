@@ -1,0 +1,33 @@
+{
+  "timestamp": "2026-06-01T05:58:12.943Z",
+  "config": {
+    "batchSize": 2,
+    "maxPages": 15,
+    "cooldown": 7000
+  },
+  "summary": {
+    "total": 1,
+    "success": 0,
+    "notFound": 1,
+    "blocked": 0,
+    "failed": 0,
+    "duration": 116
+  },
+  "results": [
+    {
+      "batchNumber": 1,
+      "keywordId": 142645,
+      "keyword": "피규어감사패",
+      "url": "https://smartstore.naver.com/onefigure_official/products/6658941467",
+      "mid": "6658941467",
+      "rank": null,
+      "duration": 116116,
+      "error": "15페이지까지 미발견",
+      "saveResult": {
+        "success": true,
+        "slotNaverId": 200,
+        "action": "updated"
+      }
+    }
+  ]
+}

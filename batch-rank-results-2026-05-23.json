@@ -1,0 +1,38 @@
+{
+  "timestamp": "2026-05-23T05:22:09.134Z",
+  "config": {
+    "batchSize": 1,
+    "maxPages": 15,
+    "cooldown": 7000
+  },
+  "summary": {
+    "total": 1,
+    "success": 1,
+    "notFound": 0,
+    "blocked": 0,
+    "failed": 0,
+    "duration": 19
+  },
+  "results": [
+    {
+      "batchNumber": 1,
+      "keywordId": 85358,
+      "keyword": "차이팟",
+      "url": "https://smartstore.naver.com/sunsaem/products/5994983177?nl-au=5906e080b9554dd5b730d00a7fea052b&nl-query=%EC%84%A0%EC%83%98",
+      "mid": "83539482665",
+      "rank": {
+        "totalRank": 69,
+        "organicRank": 69,
+        "isAd": false,
+        "page": 2,
+        "pagePosition": 29
+      },
+      "duration": 18481,
+      "saveResult": {
+        "success": true,
+        "slotNaverId": 1,
+        "action": "updated"
+      }
+    }
+  ]
+}

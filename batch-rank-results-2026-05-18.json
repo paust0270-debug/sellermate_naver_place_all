@@ -1,0 +1,38 @@
+{
+  "timestamp": "2026-05-18T05:13:30.755Z",
+  "config": {
+    "batchSize": 1,
+    "maxPages": 15,
+    "cooldown": 7000
+  },
+  "summary": {
+    "total": 1,
+    "success": 1,
+    "notFound": 0,
+    "blocked": 0,
+    "failed": 0,
+    "duration": 44
+  },
+  "results": [
+    {
+      "batchNumber": 1,
+      "keywordId": 65618,
+      "keyword": "몽키스패너",
+      "url": "https://smartstore.naver.com/kellsen/products/13359304497",
+      "mid": "90903814829",
+      "rank": {
+        "totalRank": 198,
+        "organicRank": 198,
+        "isAd": false,
+        "page": 5,
+        "pagePosition": 38
+      },
+      "duration": 43718,
+      "saveResult": {
+        "success": true,
+        "slotNaverId": 140,
+        "action": "updated"
+      }
+    }
+  ]
+}

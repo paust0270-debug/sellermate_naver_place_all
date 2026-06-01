@@ -1,0 +1,17 @@
+{
+  "timestamp": "2026-05-25T13:06:30.075Z",
+  "config": {
+    "batchSize": 1,
+    "maxPages": 15,
+    "cooldown": 7000
+  },
+  "summary": {
+    "total": 1,
+    "success": 0,
+    "notFound": 0,
+    "blocked": 0,
+    "failed": 1,
+    "duration": 15
+  },
+  "results": []
+}
