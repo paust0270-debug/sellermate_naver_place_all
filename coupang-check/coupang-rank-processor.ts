@@ -3,6 +3,7 @@ import { createClient } from '@supabase/supabase-js';
 import * as dotenv from 'dotenv';
 import * as path from 'path';
 import * as readline from 'readline';
+import { getPhoneTetheringStatus } from '../ipRotation';
 
 // 환경 변수 로드 (.env.local 우선)
 dotenv.config({ path: path.join(process.cwd(), '.env.local') });
@@ -2000,6 +2001,16 @@ async function processKeywordItems(windowCount: number, once?: boolean) {
         break;
       }
 
+      if (process.env.COUPANG_SKIP_TETHERING_CHECK !== '1') {
+        const tether = await getPhoneTetheringStatus();
+        if (!tether.ready) {
+          console.log(`\n📱 테더링 없음 — 쿠팡 처리 일시 중지 (${tether.reason})`);
+          console.log('⏳ 10초 후 다시 확인...\n');
+          await new Promise((r) => setTimeout(r, 10000));
+          continue;
+        }
+      }
+
       // 1. sellermate_keywords 테이블에서 항목 조회 (병렬 처리용)
       const items: (KeywordItem | null)[] = [];
       for (let i = 0; i < windowCount; i++) {
@@ -2184,31 +2195,53 @@ async function runFreeCoupangOnce(): Promise<void> {
   }
 }
 
+/** 쿠팡 유료/무료: 핸드폰 테더링(또는 ADB) 없으면 실행 안 함 */
+async function assertPhoneTetheringForCoupang(): Promise<void> {
+  if (process.env.COUPANG_SKIP_TETHERING_CHECK === '1') {
+    console.log('⚠️ COUPANG_SKIP_TETHERING_CHECK=1 — 테더링 검사 생략');
+    return;
+  }
+
+  const status = await getPhoneTetheringStatus();
+  if (status.ready) {
+    console.log(`📱 테더링 OK: ${status.reason}`);
+    return;
+  }
+
+  console.error('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.error('❌ 쿠팡 순위체크 중단 — 핸드폰 테더링이 연결되어 있지 않습니다.');
+  console.error(`   ${status.reason}`);
+  console.error('');
+  console.error('   다음 중 하나를 준비한 뒤 다시 실행하세요:');
+  console.error('   • USB 테더링: 휴대폰 USB 연결 → 테더링(핫스팟/USB) 켜기');
+  console.error('   • ADB: USB 디버깅 허용 후 adb devices 에 device 표시');
+  console.error('');
+  console.error('   (개발 PC만 검사 끄기: COUPANG_SKIP_TETHERING_CHECK=1)');
+  console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+  process.exit(1);
+}
+
 // 진입점: --free-only → 무료 1건 후 종료, --once → 유료 1건 후 종료, 아니면 무한 루프
 const argv = typeof process !== 'undefined' && process.argv ? process.argv : [];
 const isFreeOnly = argv.includes('--free-only');
 const isOnce = argv.includes('--once');
 
-if (isFreeOnly) {
-  runFreeCoupangOnce()
-    .then(() => process.exit(0))
-    .catch((error: any) => {
-      console.error('❌ 쿠팡 무료 실행 오류:', error?.message || error);
-      process.exit(1);
-    });
-} else if (isOnce) {
-  runOnce()
-    .then(() => process.exit(0))
-    .catch((error: any) => {
-      console.error('❌ 치명적 실행 오류:', error?.message || error);
-      process.exit(1);
-    });
-} else {
-  runWithAutoRestart().catch((error: any) => {
-    console.error('❌ 치명적 실행 오류:', error?.message || error);
-    console.error(error);
-    console.log('⏳ 5초 후 자동으로 재시작을 시도합니다...');
-    setTimeout(() => process.exit(1), 5000);
-  });
+async function mainEntry(): Promise<void> {
+  await assertPhoneTetheringForCoupang();
+
+  if (isFreeOnly) {
+    await runFreeCoupangOnce();
+    process.exit(0);
+  }
+  if (isOnce) {
+    await runOnce();
+    process.exit(0);
+  }
+  await runWithAutoRestart();
 }
 
+mainEntry().catch((error: unknown) => {
+  const msg = error instanceof Error ? error.message : String(error);
+  console.error('❌ 쿠팡 실행 오류:', msg);
+  process.exit(1);
+});

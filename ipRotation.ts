@@ -199,13 +199,66 @@ async function rotateIPWithAdb(oldIP: string): Promise<IPRotationResult> {
 export async function getTetheringAdapter(): Promise<string | null> {
   try {
     const { stdout } = await execAsync(
-      `powershell -NoProfile -Command "Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -and ($_.InterfaceDescription -like '*USB*' -or $_.InterfaceDescription -like '*Android*') } | Select-Object -First 1 -ExpandProperty ifIndex"`,
+      `powershell -NoProfile -Command "Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -and ($_.InterfaceDescription -like '*USB*' -or $_.InterfaceDescription -like '*Android*' -or $_.InterfaceDescription -like '*Remote NDIS*' -or $_.InterfaceDescription -like '*RNDIS*' -or $_.InterfaceDescription -like '*Apple*' -or $_.InterfaceDescription -like '*iPhone*' -or $_.InterfaceDescription -like '*Mobile Broadband*') } | Select-Object -First 1 -ExpandProperty ifIndex"`,
       { encoding: "utf8", windowsHide: true, timeout: 15000 }
     );
     return stdout.trim() || null;
   } catch {
     return null;
   }
+}
+
+export type PhoneTetheringStatus = {
+  ready: boolean;
+  reason: string;
+  adbStatus: "device" | "unauthorized" | null;
+  adapterIndex: string | null;
+};
+
+/**
+ * 쿠팡 등 모바일 IP 필요 작업: USB 테더링 어댑터 Up 또는 ADB 폰 연결
+ */
+export async function getPhoneTetheringStatus(): Promise<PhoneTetheringStatus> {
+  const adbStatus = await checkAdbDeviceStatus();
+  if (adbStatus === "device") {
+    return {
+      ready: true,
+      reason: "ADB device connected (mobile data control available)",
+      adbStatus,
+      adapterIndex: null,
+    };
+  }
+
+  const adapterIndex = await getTetheringAdapter();
+  if (adapterIndex) {
+    return {
+      ready: true,
+      reason: `Phone tethering adapter is up (ifIndex ${adapterIndex})`,
+      adbStatus,
+      adapterIndex,
+    };
+  }
+
+  if (adbStatus === "unauthorized") {
+    return {
+      ready: false,
+      reason: "Phone connected via USB but ADB unauthorized — allow USB debugging",
+      adbStatus,
+      adapterIndex: null,
+    };
+  }
+
+  return {
+    ready: false,
+    reason:
+      "No active phone tethering (USB/Android/RNDIS adapter) and no ADB device — connect phone tethering or USB debugging",
+    adbStatus,
+    adapterIndex: null,
+  };
+}
+
+export async function isPhoneTetheringReady(): Promise<boolean> {
+  return (await getPhoneTetheringStatus()).ready;
 }
 
 async function disableAdapter(ifIndex: string): Promise<boolean> {
