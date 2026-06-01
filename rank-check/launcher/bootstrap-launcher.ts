@@ -16,7 +16,13 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 import { syncGitRepo, GIT_CHECK_INTERVAL_MS } from './git-sync';
-import { loadProjectEnvFile, buildEnvWithProjectFile } from '../utils/load-project-env';
+import {
+  loadProjectEnvFile,
+  buildEnvWithProjectFile,
+  findBundledEnvForInstall,
+  isLegacyJwtServiceKey,
+  writeEnvFile,
+} from '../utils/load-project-env';
 
 // ============ 설정 ============
 const GIT_REPO =
@@ -271,8 +277,19 @@ async function main(): Promise<void> {
 
   const envPath = path.join(INSTALL_DIR, '.env');
   const envExample = path.join(INSTALL_DIR, '.env.example');
+  const bundledEnv = findBundledEnvForInstall(INSTALL_DIR);
+
   if (fs.existsSync(envPath)) {
-    log('기존 .env 유지 (덮어쓰지 않음)');
+    const current = loadProjectEnvFile(INSTALL_DIR);
+    if (isLegacyJwtServiceKey(current.SUPABASE_SERVICE_ROLE_KEY) && bundledEnv) {
+      writeEnvFile(envPath, bundledEnv);
+      log('예전 Legacy JWT .env → .env.defaults(복사본) 키로 자동 교체');
+    } else {
+      log('기존 .env 유지 (덮어쓰지 않음)');
+    }
+  } else if (bundledEnv) {
+    writeEnvFile(envPath, bundledEnv);
+    log('.env 없음 → .env.defaults 에서 생성');
   } else if (fs.existsSync(envExample)) {
     fs.copyFileSync(envExample, envPath);
     log('.env를 .env.example에서 복사했습니다.');
@@ -298,12 +315,13 @@ async function main(): Promise<void> {
     console.log(`  경로: ${envPath}`);
     exitWithPause(1);
   }
-  if (fileEnv.SUPABASE_SERVICE_ROLE_KEY.startsWith('eyJ')) {
+  if (isLegacyJwtServiceKey(fileEnv.SUPABASE_SERVICE_ROLE_KEY)) {
     console.log('');
     console.log('[오류] Legacy JWT service_role 키(eyJ…) — Supabase에서 비활성화되었습니다.');
     console.log(`  .env: ${envPath}`);
-    console.log('  → Supabase 대시보드 → API Keys → sb_secret_… 를 복사해 SUPABASE_SERVICE_ROLE_KEY 에 넣으세요.');
-    console.log('  → 정상 PC의 .env 를 통째로 복사해도 됩니다.');
+    console.log('  → 이 PC에 예전 D:\\naverrank\\.env 가 남아 있습니다.');
+    console.log('  → SellermatePortable 폴더의 .env.defaults 를 .env 로 복사하거나');
+    console.log('  → deploy\\FIX-ENV.bat 실행 / prepare-portable.bat 으로 폴더 다시 만드세요.');
     exitWithPause(1);
   }
 

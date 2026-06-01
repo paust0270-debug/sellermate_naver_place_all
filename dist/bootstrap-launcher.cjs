@@ -102,11 +102,8 @@ function unquote(value) {
   }
   return v;
 }
-function loadProjectEnvFile(rootDir) {
-  const envPath = path2.join(rootDir, ".env");
+function parseEnvContent(content) {
   const out = {};
-  if (!fs2.existsSync(envPath)) return out;
-  const content = fs2.readFileSync(envPath, "utf8");
   for (const line of content.split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#")) continue;
@@ -116,6 +113,9 @@ function loadProjectEnvFile(rootDir) {
     const value = unquote(trimmed.slice(eq + 1));
     if (key) out[key] = value;
   }
+  return out;
+}
+function applyEnvAliases(out) {
   if (!out.SUPABASE_URL && out.NEXT_PUBLIC_SUPABASE_URL) {
     out.SUPABASE_URL = out.NEXT_PUBLIC_SUPABASE_URL;
   }
@@ -123,6 +123,43 @@ function loadProjectEnvFile(rootDir) {
     out.SUPABASE_SERVICE_ROLE_KEY = out.SUPABASE_ANON_KEY;
   }
   return out;
+}
+function loadEnvFileFromPath(envFilePath) {
+  if (!fs2.existsSync(envFilePath)) return {};
+  return applyEnvAliases(parseEnvContent(fs2.readFileSync(envFilePath, "utf8")));
+}
+function loadProjectEnvFile(rootDir) {
+  return loadEnvFileFromPath(path2.join(rootDir, ".env"));
+}
+function isLegacyJwtServiceKey(key) {
+  return !!key && key.startsWith("eyJ");
+}
+var ENV_KEYS_TO_WRITE = [
+  "SUPABASE_URL",
+  "SUPABASE_SERVICE_ROLE_KEY",
+  "NEXT_PUBLIC_SUPABASE_URL",
+  "NEXT_PUBLIC_SUPABASE_ANON_KEY"
+];
+function writeEnvFile(envFilePath, vars) {
+  const lines = [];
+  for (const key of ENV_KEYS_TO_WRITE) {
+    if (vars[key]) lines.push(`${key}=${vars[key]}`);
+  }
+  fs2.writeFileSync(envFilePath, `${lines.join("\n")}
+`, "utf8");
+}
+function findBundledEnvForInstall(installDir) {
+  const candidates = [
+    path2.join(installDir, ".env.defaults"),
+    path2.join(installDir, "deploy", "local.env")
+  ];
+  for (const filePath of candidates) {
+    const env = loadEnvFileFromPath(filePath);
+    if (env.SUPABASE_URL && env.SUPABASE_SERVICE_ROLE_KEY && !isLegacyJwtServiceKey(env.SUPABASE_SERVICE_ROLE_KEY)) {
+      return env;
+    }
+  }
+  return null;
 }
 function buildEnvWithProjectFile(rootDir, extra = {}) {
   const fileEnv = loadProjectEnvFile(rootDir);
@@ -325,8 +362,18 @@ async function main() {
   console.log("-".repeat(50));
   const envPath = path3.join(INSTALL_DIR, ".env");
   const envExample = path3.join(INSTALL_DIR, ".env.example");
+  const bundledEnv = findBundledEnvForInstall(INSTALL_DIR);
   if (fs3.existsSync(envPath)) {
-    log("\uAE30\uC874 .env \uC720\uC9C0 (\uB36E\uC5B4\uC4F0\uC9C0 \uC54A\uC74C)");
+    const current = loadProjectEnvFile(INSTALL_DIR);
+    if (isLegacyJwtServiceKey(current.SUPABASE_SERVICE_ROLE_KEY) && bundledEnv) {
+      writeEnvFile(envPath, bundledEnv);
+      log("\uC608\uC804 Legacy JWT .env \u2192 .env.defaults(\uBCF5\uC0AC\uBCF8) \uD0A4\uB85C \uC790\uB3D9 \uAD50\uCCB4");
+    } else {
+      log("\uAE30\uC874 .env \uC720\uC9C0 (\uB36E\uC5B4\uC4F0\uC9C0 \uC54A\uC74C)");
+    }
+  } else if (bundledEnv) {
+    writeEnvFile(envPath, bundledEnv);
+    log(".env \uC5C6\uC74C \u2192 .env.defaults \uC5D0\uC11C \uC0DD\uC131");
   } else if (fs3.existsSync(envExample)) {
     fs3.copyFileSync(envExample, envPath);
     log(".env\uB97C .env.example\uC5D0\uC11C \uBCF5\uC0AC\uD588\uC2B5\uB2C8\uB2E4.");
@@ -351,12 +398,13 @@ async function main() {
     console.log(`  \uACBD\uB85C: ${envPath}`);
     exitWithPause(1);
   }
-  if (fileEnv.SUPABASE_SERVICE_ROLE_KEY.startsWith("eyJ")) {
+  if (isLegacyJwtServiceKey(fileEnv.SUPABASE_SERVICE_ROLE_KEY)) {
     console.log("");
     console.log("[\uC624\uB958] Legacy JWT service_role \uD0A4(eyJ\u2026) \u2014 Supabase\uC5D0\uC11C \uBE44\uD65C\uC131\uD654\uB418\uC5C8\uC2B5\uB2C8\uB2E4.");
     console.log(`  .env: ${envPath}`);
-    console.log("  \u2192 Supabase \uB300\uC2DC\uBCF4\uB4DC \u2192 API Keys \u2192 sb_secret_\u2026 \uB97C \uBCF5\uC0AC\uD574 SUPABASE_SERVICE_ROLE_KEY \uC5D0 \uB123\uC73C\uC138\uC694.");
-    console.log("  \u2192 \uC815\uC0C1 PC\uC758 .env \uB97C \uD1B5\uC9F8\uB85C \uBCF5\uC0AC\uD574\uB3C4 \uB429\uB2C8\uB2E4.");
+    console.log("  \u2192 \uC774 PC\uC5D0 \uC608\uC804 D:\\naverrank\\.env \uAC00 \uB0A8\uC544 \uC788\uC2B5\uB2C8\uB2E4.");
+    console.log("  \u2192 SellermatePortable \uD3F4\uB354\uC758 .env.defaults \uB97C .env \uB85C \uBCF5\uC0AC\uD558\uAC70\uB098");
+    console.log("  \u2192 deploy\\FIX-ENV.bat \uC2E4\uD589 / prepare-portable.bat \uC73C\uB85C \uD3F4\uB354 \uB2E4\uC2DC \uB9CC\uB4DC\uC138\uC694.");
     exitWithPause(1);
   }
   console.log("");

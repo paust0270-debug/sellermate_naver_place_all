@@ -1,19 +1,19 @@
 ■ 다른 PC에서 쓰는 방법 (설정 몰라도 됨)
 
-1) 이 PC(개발 PC)에서 프로젝트 루트의 prepare-portable.bat 더블클릭
-   → SellermatePortable 폴더가 생성됩니다.
+1) 이 PC(개발 PC)에서 prepare-portable.bat 더블클릭
+   → SellermatePortable 폴더 생성 (.env + .env.defaults 포함)
 
-2) SellermatePortable 폴더 통째로 USB/카톡/공유폴더로 복사
+2) SellermatePortable 폴더 통째로 복사
 
-3) 새 PC 준비
-   - Node.js LTS 설치
-   - Git 설치
+3) 새 PC: Node.js + Git 설치
 
-4) 새 PC에 폴더 붙여넣기 (둘 중 하나)
-   A) D:\naverrank 에 통째로 덮어쓰기  (EXE 쓸 때)
-   B) 아무 위치 (예: D:\SellermatePortable) + START.bat 실행
+4) 붙여넣기
+   · D:\naverrank 가 이미 있고 예전에 깔았던 PC:
+     → 폴더 안의 .env.defaults 가 있으면 FIX-ENV.bat 실행
+     → 또는 예전 D:\naverrank\.env 파일 삭제 후 통째로 덮어쓰기
+   · 새 폴더: 아무 경로에 붙여넣고 START.bat 실행
 
-5) START.bat 더블클릭 → 끝
+5) START.bat 더블클릭 (EXE 대신 이것도 됨)
 
-※ 쿠팡 순위는 USB 테더링/ADB 있는 PC만 실행됩니다.
-※ 키/비밀번호는 Git에 올라가지 않습니다 (deploy/local.env 만 로컬).
+※ EXE 실행 시에도 .env.defaults 가 있으면 Legacy JWT .env 는 자동 교체됩니다.
+※ 키는 Git에 올라가지 않습니다.

@@ -42,7 +42,11 @@ if errorlevel 8 (
 )
 
 copy /Y "%ENV_SRC%" "%DEST%\.env" >nul
+copy /Y "%ENV_SRC%" "%DEST%\.env.defaults" >nul
+if not exist "%DEST%\deploy" mkdir "%DEST%\deploy"
+copy /Y "%ENV_SRC%" "%DEST%\deploy\local.env" >nul
 copy /Y "%~dp0deploy\START.bat" "%DEST%\START.bat" >nul
+copy /Y "%~dp0deploy\FIX-ENV.bat" "%DEST%\FIX-ENV.bat" >nul
 copy /Y "%~dp0deploy\다른PC-복사방법.txt" "%DEST%\다른PC-복사방법.txt" >nul
 
 echo.

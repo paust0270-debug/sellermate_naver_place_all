@@ -10,6 +10,7 @@ node_modules/
 # Portable deploy bundle (contains .env with secrets)
 SellermatePortable/
 deploy/local.env
+.env.defaults
 
 # Built installer artifacts (rebuild with rank-check/launcher/build-exe.bat)
 dist/*.exe
