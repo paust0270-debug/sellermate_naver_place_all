@@ -161,10 +161,14 @@ export class ReceiptCaptchaSolverPRB {
       // 질문 텍스트 추출
       let question = "";
 
-      // 방법 1: "무엇입니까?" 형식
-      const questionMatch = bodyText.match(/.+무엇입니까\??/);
+      // 방법 1: 줄 단위 질문 추출(과도하게 긴 본문 매칭 방지)
+      const questionLines = bodyText
+        .split(/\n+/)
+        .map((line) => normalize(line))
+        .filter((line) => line && (line.includes("무엇입니까") || line.includes("[?]") || line.includes("번째") || line.includes("빈 칸") || line.includes("물건") || line.includes("가게") || line.includes("전화번호") || line.includes("상호명") || line.includes("주소")) && line.length <= 160);
+      const questionMatch = questionLines.find((line) => line.includes("무엇입니까")) || questionLines[0] || "";
       if (questionMatch) {
-        question = questionMatch[0].trim();
+        question = questionMatch.trim();
       }
 
       // 방법 2: 빨간색 스타일 텍스트
@@ -231,6 +235,7 @@ export class ReceiptCaptchaSolverPRB {
   private async captureReceiptImage(page: GenericPage): Promise<string> {
     const selectors = [
       "#rcpt_img",
+      "#captchaimg",
       ".captcha_img",
       ".captcha_img_cover img",
       'img[alt="캡차이미지"]',
@@ -401,11 +406,15 @@ export class ReceiptCaptchaSolverPRB {
    */
   private async submitAnswer(page: GenericPage, answer: string): Promise<void> {
     const inputSelectors = [
-      'input[type="text"]',
-      'input[placeholder*="입력"]',
-      'input[placeholder*="정답"]',
-      'input[name*="answer"]',
-      'input[id*="answer"]',
+      "#captcha",
+      'input#captcha',
+      'input[name="captcha"]',
+      "#chptcha",
+      'input#chptcha',
+      'input[name="chptcha"]',
+      'input[id="chptcha"]',
+      '.captcha_wrap input',
+      '.captcha_area input',
       ".captcha_input input",
       "#captcha_answer",
     ];

@@ -21,6 +21,7 @@ export interface KeywordRecord {
 export interface RankResult {
   productName: string;
   mid: string;
+  midSource?: string | null;
   totalRank: number;
   organicRank: number;
   page: number;
@@ -49,7 +50,8 @@ export async function saveRankToSlotNaverTest(
     const isAd = rankResult?.isAd ?? false;
     const pageNumber = rankResult?.page ?? null;
     const productName = rankResult?.productName ?? null;
-    const mid = rankResult?.mid ?? null;
+    const mid = typeof rankResult?.mid === 'string' && rankResult.mid.trim() ? rankResult.mid.trim() : null;
+    const midSource = rankResult?.midSource ?? null;
 
     let slotRecord: any = null;
     const isRankNotFound = currentRank === -1;
@@ -112,8 +114,9 @@ export async function saveRankToSlotNaverTest(
     const now = new Date().toISOString();
 
     if (slotRecord) {
+      const nextMid = mid ?? (typeof slotRecord.mid === 'string' && slotRecord.mid.trim() ? slotRecord.mid.trim() : null);
       if (isRankNotFound) {
-        console.log(`   ⚠️ 순위권 밖(-1) - current_rank 유지, 히스토리만 저장`);
+        console.log(`   ⚠️ 순위권 밖(-1) - current_rank 유지, mid 보존`);
       } else {
         const { error: updateError } = await supabase
           .from('slot_navertest')
@@ -122,7 +125,7 @@ export async function saveRankToSlotNaverTest(
             start_rank: slotRecord.start_rank ?? currentRank,
             keyword: keyword.keyword,
             link_url: keyword.link_url,
-            mid: mid,
+            mid: nextMid,
             product_name: productName,
             updated_at: now,
           })
@@ -132,7 +135,7 @@ export async function saveRankToSlotNaverTest(
           throw new Error(`slot_navertest UPDATE 실패: ${updateError.message}`);
         }
 
-        console.log(`   💾 slot_navertest 업데이트: ID ${slotRecord.id}, 순위 ${currentRank}`);
+        console.log(`   💾 slot_navertest 업데이트: ID ${slotRecord.id}, 순위 ${currentRank}, mid=${nextMid || 'NULL'}${midSource ? `, source=${midSource}` : ''}`);
       }
     } else if (!isRankNotFound) {
       const { data: insertedData, error: insertError } = await supabase
@@ -146,7 +149,7 @@ export async function saveRankToSlotNaverTest(
           customer_name: keyword.customer_name || '테스트',
           current_rank: currentRank,
           start_rank: currentRank,
-          mid: mid,
+          mid,
           product_name: productName,
           created_at: now,
           updated_at: now,
@@ -159,7 +162,7 @@ export async function saveRankToSlotNaverTest(
       }
 
       slotRecord = insertedData;
-      console.log(`   ✨ slot_navertest 신규 생성: ID ${slotRecord.id}`);
+      console.log(`   ✨ slot_navertest 신규 생성: ID ${slotRecord.id}${midSource ? `, source=${midSource}` : ''}`);
     }
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

@@ -71,16 +71,28 @@ function parseArgs() {
   return { workers, limit };
 }
 
-// 셀러메이트 슬롯에는 mid 컬럼 없을 수 있음 → 캐시 스킵
-async function getCachedMids(_urls: string[]): Promise<Map<string, string>> {
+// 셀러메이트 슬롯의 저장된 MID를 URL 기준으로 캐시
+async function getCachedMids(urls: string[]): Promise<Map<string, string>> {
   const midMap = new Map<string, string>();
   const { data, error } = await supabase
     .from(TABLE_SLOT)
-    .select('link_url')
-    .limit(1);
-  if (!error && data && data.length > 0) {
-    // 테이블 존재 확인만 (mid 미사용)
+    .select('link_url, mid')
+    .not('mid', 'is', null)
+    .in('link_url', urls);
+
+  if (error) {
+    console.warn(`   ⚠️ MID 캐시 조회 실패: ${error.message}`);
+    return midMap;
   }
+
+  for (const row of data || []) {
+    const linkUrl = (row as any).link_url;
+    const mid = typeof (row as any).mid === 'string' ? (row as any).mid.trim() : '';
+    if (linkUrl && mid) {
+      midMap.set(linkUrl, mid);
+    }
+  }
+
   return midMap;
 }
 

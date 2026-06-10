@@ -41,7 +41,8 @@ export async function findAccurateRank(
   page: Page,
   keyword: string,
   targetMid: string,
-  maxPages = 15
+  maxPages = 15,
+  options?: { seedKeyword?: string }
 ): Promise<RankResult | null> {
   const normalizedKeyword = keyword.trim();
   const normalizedMid = targetMid.trim();
@@ -54,7 +55,7 @@ export async function findAccurateRank(
   const limit = Math.max(1, Math.min(maxPages, 15));
   console.log(`🔍 "${normalizedKeyword}" / MID ${normalizedMid} 순위 추적 (최대 ${limit}페이지)`);
 
-  const shoppingReady = await enterShoppingTab(page, normalizedKeyword);
+  const shoppingReady = await enterShoppingTab(page, normalizedKeyword, options?.seedKeyword);
   if (!shoppingReady) {
     console.log("❌ 쇼핑탭 진입에 실패했습니다.");
     // 차단 여부 확인
@@ -239,10 +240,11 @@ export async function findAccurateRank(
   return null;
 }
 
-async function enterShoppingTab(page: Page, keyword: string): Promise<boolean> {
+async function enterShoppingTab(page: Page, keyword: string, seedKeyword?: string): Promise<boolean> {
   console.log("🧭 네이버 메인 진입");
   try {
-    await page.goto("https://www.naver.com/", {
+    const firstKeyword = seedKeyword?.trim() || keyword;
+    await page.goto(`https://search.naver.com/search.naver?sm=tab_hty.top&where=nexearch&ssc=tab.nx.all&query=${encodeURIComponent(firstKeyword)}`, {
       waitUntil: "domcontentloaded",
       timeout: 45000, // 저사양 PC 대응 (45초)
     });
@@ -318,7 +320,7 @@ async function hydrateCurrentPage(page: Page): Promise<void> {
 
 async function collectProductsOnPage(page: Page, pageNumber: number): Promise<PageScanResult> {
   const result = await page.$$eval(
-    'a[data-shp-contents-id][data-shp-contents-rank]',
+    'a[data-shp-contents-id][data-shp-contents-rank][data-shp-contents-dtl]',
     (anchors, pageNum) => {
       const seen = new Set();
       const products = [];
@@ -330,11 +332,30 @@ async function collectProductsOnPage(page: Page, pageNumber: number): Promise<Pa
 
         const totalRank = parseInt(rankAttr, 10);
         if (!Number.isFinite(totalRank)) continue;
-        if (seen.has(mid)) continue;
+
+        // Extract matching ID from detail payload (parallel-rank-checker와 동일)
+        let chnlProdNo = "";
+        const dtl = anchor.getAttribute("data-shp-contents-dtl");
+        if (dtl) {
+          try {
+            const normalizedDtl = dtl.replace(/&quot;/g, '"');
+            const parsedDtl = JSON.parse(normalizedDtl);
+            if (Array.isArray(parsedDtl)) {
+              const chnl = parsedDtl.find((item) => item && item.key === "chnl_prod_no");
+              if (chnl && chnl.value) {
+                chnlProdNo = String(chnl.value);
+              }
+            }
+          } catch {
+            // ignore
+          }
+        }
+
+        const productMid = chnlProdNo || mid;
+        if (!productMid || seen.has(productMid)) continue;
 
         // Extract organic rank
         let organicRank = -1;
-        const dtl = anchor.getAttribute("data-shp-contents-dtl");
         if (dtl) {
           try {
             const normalized = dtl.replace(/&quot;/g, '"');
@@ -408,7 +429,7 @@ async function collectProductsOnPage(page: Page, pageNumber: number): Promise<Pa
         const isAd = /lst\*(A|P|D)/.test(inventory);
 
         products.push({
-          mid: mid,
+          mid: productMid,
           productName: productName,
           totalRank: totalRank,
           organicRank: organicRank >= 0 ? organicRank : -1,
@@ -416,7 +437,7 @@ async function collectProductsOnPage(page: Page, pageNumber: number): Promise<Pa
           pagePosition: 0,
         });
 
-        seen.add(mid);
+        seen.add(productMid);
       }
 
       products.sort((a, b) => a.totalRank - b.totalRank);
@@ -609,7 +630,7 @@ async function goToPageAndGetAPIData(page: Page, targetPage: number): Promise<Pr
 
     for (let i = 0; i < apiProducts.length; i++) {
       const p = apiProducts[i];
-      const mid = p.id || p.nvMid || "";
+      const mid = p.channelProductNo || p.mallProductId || p.id || p.nvMid || "";
       const totalRank = p.rank || (targetPage - 1) * 40 + i + 1;
       const organicRank = p.rankInfo?.organicRank || -1;
       const productName = p.productTitle || p.title || "상품명 없음";
