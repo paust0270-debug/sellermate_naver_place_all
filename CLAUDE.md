@@ -56,7 +56,7 @@ RETURNING *;
 
 - **`rank-check/`** — Naver Shopping rank checker. Uses dependency injection: `RankChecker` composes `INavigator`, `IProductCollector`, `ISecurityDetector`. Products are collected via `HybridProductCollector` (API + DOM fallback). MID extraction handles 5+ URL formats (`v_mid=`, `vMid=`, `product?p=`, `catalog/`, `products/`). Rank = `(page - 1) × 40 + position`.
 - **`place-check/`** — Naver Place rank checker. Clears cookies after each check to prevent session leakage.
-- **`coupang-check/`** — Coupang rank processor (`coupang-rank-processor.ts`, ~2200 lines).
+- **`coupang-check/`** — Coupang rank processor (`coupang-rank-processor.ts`, ~2200 lines). Also performs **cart traffic** (장바구니 담기): during rank check it adds the target product to cart as an engagement signal. **Currently browser-based** (patchright + system Chrome, non-logged-in, `coupang-rank-processor.ts:454–554`); **planned migration to a packet (HTTP) method.** Details → `BRIEFING-coupang-cart-traffic.md`, skill `coupang-cart-traffic`.
 - **`shopping-traffic/`** — Traffic generation runner for Naver Shopping SEO.
 - **`ipRotation.ts`** — IP rotation via ADB (toggles mobile data) or network adapter disable/enable as fallback. Includes a recovery daemon that re-enables mobile data every 5 seconds.
 
