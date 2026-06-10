@@ -15,7 +15,7 @@
 import * as dotenv from "dotenv";
 import * as path from "path";
 import * as fs from "fs";
-import { execSync } from "child_process";
+import { execSync, spawnSync } from "child_process";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -131,6 +131,19 @@ const WEB_CONTEXT = {
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.SUPABASE_PRODUCTION_URL || '';
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_PRODUCTION_KEY || '';
 const EQUIPMENT_NAME = process.env.EQUIPMENT_NAME || '';
+const NAVER_LOGIN_URL = "https://nid.naver.com/nidlogin.login?svctype=262144";
+const DEFAULT_ACCOUNT_WORKBOOK = path.resolve(process.cwd(), "총 취합 1353개 (3).xlsx");
+const ACCOUNT_ROW_START = parseInt(process.env.NAVER_ACCOUNT_ROW_START || "7", 10);
+const ACCOUNT_ROW_END = parseInt(process.env.NAVER_ACCOUNT_ROW_END || "10", 10);
+const NAVER_ACCOUNT_WORKBOOK = (
+  process.env.NAVER_ACCOUNT_WORKBOOK ||
+  path.resolve(__dirname, "..", "총 취합 1353개 (3).xlsx") ||
+  DEFAULT_ACCOUNT_WORKBOOK
+).trim();
+const NAVER_LOGIN_ID = (process.env.NAVER_LOGIN_ID || "").trim();
+const NAVER_LOGIN_PW = (process.env.NAVER_LOGIN_PW || "").trim();
+const NAVER_LOGIN_ENABLED = (process.env.NAVER_LOGIN_ENABLED || "").trim().toLowerCase();
+const NAVER_LOGIN_DISABLED = NAVER_LOGIN_ENABLED === "0" || NAVER_LOGIN_ENABLED === "false";
 
 // ============ Supabase 클라이언트 ============
 if (!SUPABASE_URL || !SUPABASE_KEY) {
@@ -146,6 +159,7 @@ interface WorkItem {
   keyword: string;
   productName: string;
   mid: string;
+  midSource?: string;
   linkUrl: string;
   /** 2차 검색어 조합·링크 매칭용: keyword_name */
   keywordName?: string;
@@ -159,10 +173,10 @@ interface Profile {
   };
 }
 
-interface RunContext {
-  log: (event: string, data?: any) => void;
-  profile: Profile;
-  login: boolean;
+interface AccountRow {
+  rowNumber: number;
+  loginId: string;
+  loginPw: string;
 }
 
 
@@ -173,6 +187,8 @@ let totalCaptcha = 0;
 let totalFailed = 0;
 let sessionStartTime = Date.now();
 let currentIP = "";
+let workbookAccounts: AccountRow[] = [];
+let nextWorkbookAccountIndex = 0;
 
 // ============ 작업 큐 락 (동시 접근 방지) ============
 let isClaimingTask = false;
@@ -238,6 +254,398 @@ function randomBetween(min: number, max: number): number {
 
 function randomKeyDelay(): number {
   return 30 + Math.random() * 30;
+}
+
+function readAccountsFromWorkbook(workbookPath: string): AccountRow[] {
+  if (!fs.existsSync(workbookPath)) {
+    return [];
+  }
+
+  const pythonScript = String.raw`
+import json
+import sys
+from openpyxl import load_workbook
+
+path = sys.argv[1]
+wb = load_workbook(path, data_only=True, read_only=True)
+ws = wb.worksheets[0]
+rows = []
+
+for row_index, row in enumerate(ws.iter_rows(values_only=True), start=1):
+    if not row:
+        continue
+    login_id = row[0] if len(row) > 0 else None
+    login_pw = row[1] if len(row) > 1 else None
+    if login_id is None or login_pw is None:
+        continue
+    login_id = str(login_id).strip()
+    login_pw = str(login_pw).strip()
+    if not login_id or not login_pw:
+        continue
+    rows.append({
+        "rowNumber": row_index,
+        "loginId": login_id,
+        "loginPw": login_pw,
+    })
+
+print(json.dumps(rows, ensure_ascii=False))
+`;
+
+  const pythonRuns = [
+    { command: "python", args: ["-c", pythonScript, workbookPath] },
+    { command: "py", args: ["-3", "-c", pythonScript, workbookPath] },
+  ];
+
+  let result: ReturnType<typeof spawnSync> | null = null;
+  for (const run of pythonRuns) {
+    result = spawnSync(run.command, run.args, {
+      encoding: "utf8",
+      maxBuffer: 10 * 1024 * 1024,
+    });
+    if (result.status === 0) break;
+  }
+
+  if (!result || result.status !== 0) {
+    return [];
+  }
+
+  const stdout = (result.stdout || "").trim();
+  if (!stdout) return [];
+
+  try {
+    const parsed = JSON.parse(stdout) as AccountRow[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function getWorkbookAccounts(): AccountRow[] {
+  if (workbookAccounts.length > 0) {
+    return workbookAccounts;
+  }
+
+  const allAccounts = readAccountsFromWorkbook(NAVER_ACCOUNT_WORKBOOK);
+  if (allAccounts.length === 0) {
+    return [];
+  }
+
+  const filtered = allAccounts.filter((account) => {
+    return account.rowNumber >= ACCOUNT_ROW_START && account.rowNumber <= ACCOUNT_ROW_END;
+  });
+
+  workbookAccounts = filtered;
+  return workbookAccounts;
+}
+
+function pickNextAccount(): AccountRow | null {
+  const accounts = getWorkbookAccounts();
+  if (accounts.length === 0) return null;
+  const account = accounts[nextWorkbookAccountIndex % accounts.length];
+  nextWorkbookAccountIndex += 1;
+  return account;
+}
+
+function hasNaverLoginSource(): boolean {
+  if (NAVER_LOGIN_DISABLED) return false;
+  return getWorkbookAccounts().length > 0 || (NAVER_LOGIN_ID.length > 0 && NAVER_LOGIN_PW.length > 0);
+}
+
+function maskLoginId(loginId: string): string {
+  const trimmed = loginId.trim();
+  if (trimmed.length <= 4) return "*".repeat(trimmed.length);
+  return `${trimmed.slice(0, 2)}***${trimmed.slice(-2)}`;
+}
+
+async function collectPageTextSnippet(page: Page, maxLength = 500): Promise<string> {
+  try {
+    return await page.evaluate((limit: number) => {
+      const text = (document.body?.innerText || "").replace(/\s+/g, " ").trim();
+      return text.slice(0, limit);
+    }, maxLength);
+  } catch {
+    return "";
+  }
+}
+
+async function collectVisibleButtonTexts(page: Page): Promise<string[]> {
+  try {
+    return await page.evaluate(() => {
+      const normalize = (value: string) => (value || "").replace(/\s+/g, " ").trim();
+      const elements = Array.from(document.querySelectorAll("button, a, input[type='button'], input[type='submit']"));
+      return elements
+        .map((element) => {
+          const text = normalize(
+            (element.textContent || "") +
+            " " +
+            (element.getAttribute("aria-label") || "") +
+            " " +
+            (element.getAttribute("value") || "")
+          );
+
+          if (!text) return "";
+
+          const style = window.getComputedStyle(element as Element);
+          const rect = (element as Element).getBoundingClientRect();
+          const visible =
+            style.visibility !== "hidden" &&
+            style.display !== "none" &&
+            rect.width > 0 &&
+            rect.height > 0;
+
+          return visible ? text.slice(0, 120) : "";
+        })
+        .filter(Boolean)
+        .slice(0, 20);
+    });
+  } catch {
+    return [];
+  }
+}
+
+async function dumpLoginCaptchaDom(page: Page): Promise<Array<Record<string, string>>> {
+  try {
+    return await page.evaluate(() => {
+      const normalize = (value: string) => (value || "").replace(/\s+/g, " ").trim();
+      const elements = Array.from(document.querySelectorAll("input, button, img, form, label"));
+      return elements.slice(0, 40).map((element) => {
+        const rect = (element as Element).getBoundingClientRect();
+        return {
+          tag: element.tagName.toLowerCase(),
+          id: (element as HTMLElement).id || "",
+          name: element.getAttribute("name") || "",
+          type: element.getAttribute("type") || "",
+          placeholder: element.getAttribute("placeholder") || "",
+          ariaLabel: element.getAttribute("aria-label") || "",
+          value: element.getAttribute("value") || "",
+          text: normalize(element.textContent || ""),
+          className: (element as HTMLElement).className ? String((element as HTMLElement).className) : "",
+          visible: String(rect.width > 0 && rect.height > 0),
+        };
+      });
+    });
+  } catch {
+    return [];
+  }
+}
+
+async function isLikelyLoginCaptchaPage(page: Page): Promise<boolean> {
+  try {
+    return await page.evaluate(() => {
+      const bodyText = (document.body?.innerText || "").replace(/\s+/g, " ").trim();
+      const hasCaptchaElement = !!(
+        document.querySelector("#rcpt_form") ||
+        document.querySelector(".captcha_wrap") ||
+        document.querySelector('input[name*="captcha"]') ||
+        document.querySelector('img[src*="captcha"]') ||
+        document.querySelector('[class*="captcha"]') ||
+        document.querySelector('[class*="security"]')
+      );
+
+      const hasCaptchaText =
+        bodyText.includes("캡차") ||
+        bodyText.includes("captcha") ||
+        bodyText.includes("자동입력방지") ||
+        bodyText.includes("보안 확인") ||
+        bodyText.includes("문자를 순서대로") ||
+        bodyText.includes("실제 사용자인지");
+
+      return hasCaptchaElement || hasCaptchaText;
+    });
+  } catch {
+    return false;
+  }
+}
+
+function classifyLoginFailure(bodyText: string, blocker: string | null): string {
+  const text = bodyText || "";
+  if (blocker) return `로그인 차단 감지: ${blocker}`;
+  if (text.includes("아이디 또는 전화번호를 입력해 주세요")) return "아이디 재입력 필요";
+  if (text.includes("비밀번호를 입력해 주세요")) return "비밀번호 재입력 필요";
+  if (text.includes("다시 로그인해 주세요")) return "세션 재인증 필요";
+  if (text.includes("계정 보호") || text.includes("보호조치")) return "계정 보호/보호조치";
+  if (text.includes("일치하지 않습니다") || text.includes("틀렸습니다")) return "아이디/비밀번호 불일치 가능성";
+  return "로그인 화면에 머무름";
+}
+
+async function detectLoginBlockers(page: Page): Promise<string | null> {
+  try {
+    const text = await page.evaluate(() => (document.body?.innerText || "").replace(/\s+/g, " ").trim());
+    const blockers = [
+      "보안 확인",
+      "자동입력방지",
+      "비정상적인 접근",
+      "접근이 제한",
+      "잠시 후 다시",
+      "아이디 또는 전화번호를 확인",
+      "비밀번호를 확인",
+      "로그인이 필요",
+      "캡차",
+      "captcha",
+    ];
+    const matched = blockers.find((keyword) => text.includes(keyword));
+    return matched || null;
+  } catch {
+    return null;
+  }
+}
+
+async function solveLoginPageCaptcha(page: Page): Promise<boolean> {
+  const solver = new ReceiptCaptchaSolverPRB((msg: string) => log(`[Login] ${msg}`));
+  const likelyCaptcha = await isLikelyLoginCaptchaPage(page);
+
+  if (!likelyCaptcha) {
+    return false;
+  }
+
+  log("로그인 캡챠 감지 - 해결 시도");
+  const pageTitle = await page.title().catch(() => "");
+  const pageUrl = page.url();
+  const bodySnippet = await collectPageTextSnippet(page, 500);
+  const buttons = await collectVisibleButtonTexts(page);
+  const domSnapshot = await dumpLoginCaptchaDom(page);
+
+  log(`[Login] 캡챠 페이지 제목: ${pageTitle || "N/A"}`);
+  log(`[Login] 캡챠 페이지 URL: ${pageUrl}`);
+  log(`[Login] 캡챠 본문 미리보기: ${bodySnippet || "N/A"}`);
+  log(`[Login] 캡챠 버튼 텍스트: ${buttons.join(" | ") || "N/A"}`);
+  log("[Login] 캡챠 DOM 스냅샷:");
+  for (const node of domSnapshot) {
+    log(
+      `  - <${node.tag}> id=${node.id || "-"} name=${node.name || "-"} type=${node.type || "-"} ` +
+      `ph=${node.placeholder || "-"} aria=${node.ariaLabel || "-"} value=${node.value || "-"} ` +
+      `text=${(node.text || "-").slice(0, 80)} class=${(node.className || "-").slice(0, 60)} visible=${node.visible || "-"}`
+    );
+  }
+
+  const solved = await solver.solve(page);
+  if (solved) {
+    log("로그인 캡챠 해결 완료");
+    return true;
+  }
+
+  log("로그인 캡챠 해결 실패", "warn");
+  const failShot = `/tmp/naver-login-captcha-${Date.now()}.png`;
+  await page.screenshot({ path: failShot, fullPage: true }).catch(() => {});
+  log(`[Login] 캡챠 실패 스크린샷: ${failShot}`);
+  return false;
+}
+
+async function fillNaverLoginCredentials(page: Page): Promise<void> {
+  await page.locator("#id").fill(NAVER_LOGIN_ID);
+  await page.locator("#pw").fill(NAVER_LOGIN_PW);
+}
+
+async function submitNaverLoginForm(page: Page): Promise<void> {
+  const navigationPromise = page.waitForURL((url: URL) => !url.toString().includes("nidlogin.login"), {
+    timeout: 8000,
+  }).catch(() => null);
+
+  const submitButton = page.locator("#submit_btn");
+  if (await submitButton.count().catch(() => 0)) {
+    await submitButton.click({ force: true }).catch(() => {});
+  } else {
+    await page.locator("#pw").press("Enter").catch(() => {});
+  }
+
+  await page.waitForLoadState("domcontentloaded").catch(() => {});
+  await navigationPromise;
+  await sleep(3000);
+}
+
+async function loginToNaver(page: Page, workerId: number): Promise<{ ok: boolean; reason?: string }> {
+  const workbookAccount = pickNextAccount();
+  const useWorkbookAccount = !!workbookAccount;
+  const loginId = useWorkbookAccount ? workbookAccount!.loginId : NAVER_LOGIN_ID;
+  const loginPw = useWorkbookAccount ? workbookAccount!.loginPw : NAVER_LOGIN_PW;
+  const accountLabel = useWorkbookAccount
+    ? `Worker${workerId} (row ${workbookAccount!.rowNumber}, ${maskLoginId(loginId)})`
+    : `Worker${workerId} (${maskLoginId(loginId)})`;
+
+  if (!loginId || !loginPw) {
+    return { ok: false, reason: "로그인 계정 정보 없음" };
+  }
+
+  log(`[${accountLabel}] 네이버 로그인 시작`);
+
+  try {
+    await page.goto(NAVER_LOGIN_URL, {
+      waitUntil: "domcontentloaded",
+      timeout: 30000,
+    });
+    await sleep(1000);
+
+    const MAX_LOGIN_ATTEMPTS = 2;
+    for (let attempt = 1; attempt <= MAX_LOGIN_ATTEMPTS; attempt += 1) {
+      const loginTitle = await page.title().catch(() => "");
+      const loginBody = await collectPageTextSnippet(page, 500);
+      log(`[${accountLabel}] 로그인 시도 ${attempt}/${MAX_LOGIN_ATTEMPTS}`);
+      log(`[${accountLabel}] 페이지 제목: ${loginTitle || "N/A"}`);
+      log(`[${accountLabel}] 본문 미리보기: ${loginBody || "N/A"}`);
+
+      await page.locator("#id").fill(loginId);
+      await page.locator("#pw").fill(loginPw);
+
+      const loginCaptchaSolved = await solveLoginPageCaptcha(page);
+      if (loginCaptchaSolved) {
+        log(`[${accountLabel}] 로그인 캡챠 해제 완료`);
+      }
+
+      await submitNaverLoginForm(page);
+      await sleep(2000);
+
+      if (page.url().includes("nidlogin.login")) {
+        // 1차 로그인 이후 다시 뜨는 로그인/캡챠 화면에서는 아이디/비밀번호를 다시 채운 뒤
+        // 영수증 캡챠를 풀고 로그인 버튼을 다시 눌러야 함
+        log(`[${accountLabel}] 1차 제출 후 로그인 페이지 재노출 감지`);
+        await fillNaverLoginCredentials(page);
+
+        const postSubmitCaptchaSolved = await solveLoginPageCaptcha(page);
+        if (postSubmitCaptchaSolved) {
+          log(`[${accountLabel}] 로그인 캡챠 해제 후 재전송`);
+          if (page.url().includes("nidlogin.login")) {
+            await submitNaverLoginForm(page);
+            await sleep(2000);
+          }
+        }
+      }
+
+      if (!page.url().includes("nidlogin.login")) {
+        log(`[${accountLabel}] 네이버 로그인 완료`);
+        return { ok: true };
+      }
+
+      if (attempt < MAX_LOGIN_ATTEMPTS) {
+        log(`[${accountLabel}] 다음 로그인 시도 준비`);
+      }
+    }
+
+    const blocker = await detectLoginBlockers(page);
+    const loginButtons = await collectVisibleButtonTexts(page);
+    const loginCaptcha = await isLikelyLoginCaptchaPage(page);
+    const pageTitle = await page.title().catch(() => "");
+    const bodySnippet = await collectPageTextSnippet(page, 500);
+    const reason = classifyLoginFailure(bodySnippet, blocker);
+    const domSnapshot = await dumpLoginCaptchaDom(page);
+
+    log(`[${accountLabel}] 로그인 화면 잔류`, "warn");
+    log(`[${accountLabel}] 페이지 제목: ${pageTitle || "N/A"}`, "warn");
+    log(`[${accountLabel}] 로그인 캡챠 감지: ${loginCaptcha ? "yes" : "no"}`, "warn");
+    log(`[${accountLabel}] 본문 미리보기: ${bodySnippet || "N/A"}`, "warn");
+    log(`[${accountLabel}] 실제 버튼 텍스트: ${loginButtons.join(" | ") || "N/A"}`, "warn");
+    log(`[${accountLabel}] DOM 스냅샷 항목 수: ${domSnapshot.length}`, "warn");
+    for (const node of domSnapshot.slice(0, 12)) {
+      log(
+        `  - <${node.tag}> id=${node.id || "-"} name=${node.name || "-"} type=${node.type || "-"} ` +
+        `ph=${node.placeholder || "-"} aria=${node.ariaLabel || "-"} value=${node.value || "-"} ` +
+        `text=${(node.text || "-").slice(0, 60)} class=${(node.className || "-").slice(0, 40)} visible=${node.visible || "-"}`,
+        "warn"
+      );
+    }
+    return { ok: false, reason };
+  } catch (error: any) {
+    return { ok: false, reason: error.message || "로그인 실패" };
+  }
 }
 
 // ============ [행동 계층] 베지어 곡선 마우스 ============
@@ -432,6 +840,23 @@ function loadProfile(profileName: string): Profile {
   };
 }
 
+// ============ link_url에서 상품 MID 추출 (smartstore/brand /products/숫자) ============
+function extractMidFromLinkUrl(linkUrl: string | null | undefined): string | null {
+  if (!linkUrl || typeof linkUrl !== "string") return null;
+  const patterns = [
+    /[?&](?:nv_?mid|productId|mid)=(\d{6,})/i,
+    /\/products\/(\d{6,})/i,
+    /\/catalog\/(\d{6,})/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = linkUrl.match(pattern);
+    if (match) return match[1];
+  }
+
+  return null;
+}
+
 // ============ 풀제목 → 조합형 키워드 (당일 1번 식별용: 공백 제거) ============
 function toCombinedKeyword(fullTitle: string): string {
   return (fullTitle || "").replace(/\s+/g, "").trim() || "상품";
@@ -498,11 +923,28 @@ async function claimWorkItem(): Promise<WorkItem | null> {
     resetUsedKeywordsIfNewDay();
 
     for (const task of tasks) {
-      const { data: slot, error: slotError } = await supabase
+      const slotSelectWithMid = "keyword, link_url, keyword_name, mid";
+      let slot: any = null;
+      let slotError: any = null;
+
+      const withMidResult = await supabase
         .from("sellermate_slot_naver")
-        .select("*")
+        .select(slotSelectWithMid)
         .eq("slot_sequence", task.slot_sequence)
         .single();
+
+      slot = withMidResult.data;
+      slotError = withMidResult.error;
+
+      if (slotError && slotError.message?.includes("column") && slotError.message?.includes("does not exist")) {
+        const fallbackResult = await supabase
+          .from("sellermate_slot_naver")
+          .select("keyword, link_url, keyword_name")
+          .eq("slot_sequence", task.slot_sequence)
+          .single();
+        slot = fallbackResult.data;
+        slotError = fallbackResult.error;
+      }
 
       if (slotError) {
         log(`[CLAIM] traffic id=${task.id} slot_sequence=${task.slot_sequence} → slot_naver 조회 실패: ${slotError.message}`, "warn");
@@ -515,22 +957,31 @@ async function claimWorkItem(): Promise<WorkItem | null> {
         continue;
       }
 
-      const mid = String((slot as any).mid ?? "").trim();
-      const productNameFromSlot = String((slot as any).keyword_name ?? "").trim();
-      if (!mid || /^NEED_MID_/i.test(mid)) {
-        log(`[CLAIM] traffic id=${task.id} slot_sequence=${task.slot_sequence} → sellermate_slot_naver.mid 없음/무효`, "warn");
-        await supabase.from("sellermate_traffic_navershopping").delete().eq("id", task.id);
-        continue;
-      }
-      if (!productNameFromSlot) {
-        log(`[CLAIM] traffic id=${task.id} slot_sequence=${task.slot_sequence} → keyword_name 없음, 삭제`, "warn");
+      const rawSlotMid = typeof (slot as any).mid === "string" ? (slot as any).mid.trim() : "";
+      // NEED_MID_* 플레이스홀더는 무효 처리 → link_url 파생 mid로 폴백
+      const slotMid = rawSlotMid && !/^NEED_MID_/i.test(rawSlotMid) ? rawSlotMid : "";
+      const linkUrl = (slot as any).link_url || task.link_url || "";
+      const extractedMid = extractMidFromLinkUrl(linkUrl);
+      const mid = slotMid || extractedMid;
+      const midSource = slotMid ? "slot.mid" : extractedMid ? "link_url" : "";
+      if (!mid) {
+        log(`[CLAIM] traffic id=${task.id} slot_sequence=${task.slot_sequence} → mid 없음(slot.mid 무효/NEED_MID, link_url 추출 불가): ${linkUrl}`, "warn");
         await supabase.from("sellermate_traffic_navershopping").delete().eq("id", task.id);
         continue;
       }
 
-      const linkUrl = (task.link_url || (slot as any).link_url || "") as string;
-      const keywordName = String((slot as any).keyword_name ?? "").trim() || productNameFromSlot;
-      const productName = productNameFromSlot;
+      if (midSource === "slot.mid") {
+        log(`[CLAIM] traffic id=${task.id} slot_sequence=${task.slot_sequence} → slot_naver.mid 사용: ${mid}`);
+      } else {
+        log(`[CLAIM] traffic id=${task.id} slot_sequence=${task.slot_sequence} → link_url 파생 mid 사용: ${mid}`, "warn");
+      }
+
+      const keywordName = ((slot as any).keyword_name ?? (slot as any).keyword ?? "").trim();
+      const productName = keywordName || (task.keyword || "").trim() || "상품";
+      if (!keywordName) {
+        log(`[CLAIM] traffic id=${task.id} slot_sequence=${task.slot_sequence} → keyword_name 없음, 스킵`, "warn");
+        continue;
+      }
 
       const combined = toCombinedKeyword(productName);
       if (isCombinedKeywordUsedToday(combined)) {
@@ -556,7 +1007,8 @@ async function claimWorkItem(): Promise<WorkItem | null> {
         keyword: task.keyword,
         productName,
         mid,
-        linkUrl,
+        midSource: midSource || undefined,
+        linkUrl: task.link_url || (slot as any).link_url,
         keywordName: keywordName || undefined
       };
     }
@@ -649,6 +1101,7 @@ async function updateSlotStats(
 // - 자동화 플래그 숨김
 
 type FailReason =
+  | 'LOGIN_FAILED'
   | 'NO_MID_MATCH'
   | 'CAPTCHA_UNSOLVED'
   | 'PAGE_NOT_LOADED'
@@ -661,6 +1114,7 @@ interface EngineResult {
   captchaDetected: boolean;
   captchaSolved: boolean;
   midMatched: boolean;
+  matchSource?: 'mid' | 'title';
   failReason?: FailReason;
   error?: string;
 }
@@ -673,7 +1127,7 @@ async function runPatchrightEngine(
   workerId: number,
   keywordName?: string
 ): Promise<EngineResult> {
-  const captchaSolver = new ReceiptCaptchaSolverPRB((msg) => log(`[Worker ${workerId}] ${msg}`));
+  const captchaSolver = new ReceiptCaptchaSolverPRB((msg: string) => log(`[Worker ${workerId}] ${msg}`));
 
   const result: EngineResult = {
     productPageEntered: false,
@@ -746,11 +1200,76 @@ async function runPatchrightEngine(
       }
     }
 
-    // 상품 풀제목(keyword_name)으로 검색 결과에서 해당 상품 링크 찾아 클릭 (MID 무관)
+    const targetMid = (mid || "").trim();
     const nameForMatch = productName.trim().substring(0, 40);
     const MAX_SCROLL = 4;
     let linkClicked = false;
+    let matchSource: 'mid' | 'title' | undefined;
 
+    if (targetMid) {
+      for (let i = 0; i < MAX_SCROLL && !linkClicked; i++) {
+        const matchedByMid = await page.evaluate((targetMidValue) => {
+          const links = document.querySelectorAll<HTMLAnchorElement>(
+            'a[href*="smartstore"], a[href*="brand.naver"], a[href*="shopping.naver"], a[href*="nv_mid="]'
+          );
+
+          for (const a of links) {
+            const href = a.getAttribute('href') || '';
+            if (!href) continue;
+
+            const normalizedHref = href.replace(/&amp;/g, '&');
+            if (
+              normalizedHref.includes(`nv_mid=${targetMidValue}`) ||
+              normalizedHref.includes(`nvMid=${targetMidValue}`) ||
+              normalizedHref.includes(`nv_mid%3D${targetMidValue}`)
+            ) {
+              a.setAttribute('data-turafic-click', '1');
+              return 'nv_mid';
+            }
+
+            try {
+              const url = new URL(normalizedHref, location.href);
+              const pathname = url.pathname.replace(/\/+$/, '');
+              if (pathname.includes(`/products/${targetMidValue}`)) {
+                a.setAttribute('data-turafic-click', '1');
+                return 'products';
+              }
+            } catch {
+              // ignore invalid URL values
+            }
+          }
+
+          return null;
+        }, targetMid);
+
+        if (matchedByMid) {
+          log(`[Worker ${workerId}] MID 매칭 링크 클릭: "${targetMid}" (${matchedByMid})`);
+          await page.locator('a[data-turafic-click="1"]').first().evaluate((el: HTMLAnchorElement) => el.removeAttribute('target'));
+          await page.locator('a[data-turafic-click="1"]').first().click();
+          await page.waitForLoadState('domcontentloaded', { timeout: 30000 }).catch(() => {});
+          await sleep(2000);
+          linkClicked = true;
+          result.midMatched = true;
+          matchSource = 'mid';
+
+          const dwellTime = randomBetween(3000, 6000);
+          log(`[Worker ${workerId}] 체류 ${(dwellTime / 1000).toFixed(1)}초...`);
+          await sleep(dwellTime);
+
+          const currentPageUrl = page.url();
+          log(`[Worker ${workerId}] 페이지: ${currentPageUrl.substring(0, 60)}...`);
+          if (currentPageUrl.includes('smartstore.naver.com') || currentPageUrl.includes('brand.naver.com')) {
+            result.productPageEntered = true;
+          }
+          break;
+        }
+
+        await humanScroll(page, 500);
+        await sleep(randomBetween(300, 500));
+      }
+    }
+
+    // MID 매칭 실패 시에만 제목 매칭 fallback 수행
     for (let i = 0; i < MAX_SCROLL && !linkClicked; i++) {
       const found = await page.evaluate((name) => {
         const links = document.querySelectorAll<HTMLAnchorElement>(
@@ -780,6 +1299,7 @@ async function runPatchrightEngine(
         await sleep(2000);
         linkClicked = true;
         result.midMatched = true;
+        matchSource = 'title';
 
         const dwellTime = randomBetween(3000, 6000);
         log(`[Worker ${workerId}] 체류 ${(dwellTime / 1000).toFixed(1)}초...`);
@@ -798,13 +1318,14 @@ async function runPatchrightEngine(
     }
 
     if (!linkClicked) {
-      log(`[Worker ${workerId}] 풀제목 매칭 링크 없음: "${nameForMatch}..."`, "warn");
+      log(`[Worker ${workerId}] MID/제목 매칭 링크 없음: mid=${targetMid || 'NULL'}, title="${nameForMatch}..."`, "warn");
       result.error = 'NoTitleMatch';
       result.failReason = 'NO_MID_MATCH';
       result.midMatched = false;
       return result;
     }
 
+    result.matchSource = matchSource;
     return result;
 
   } catch (e: any) {
@@ -842,19 +1363,29 @@ async function runIndependentWorker(workerId: number, profile: Profile, onceMode
       }
 
       const productShort = work.productName.substring(0, 30);
-      log(`[Worker ${workerId}] 작업: ${productShort}... (mid=${work.mid}) [IP: ${currentIP}]`);
+      log(`[Worker ${workerId}] 작업: ${productShort}... (mid=${work.mid}${work.midSource ? `, source=${work.midSource}` : ''}) [IP: ${currentIP}]`);
 
       // 2. Patchright 브라우저 시작
       const pos = BROWSER_POSITIONS[(workerId - 1) % BROWSER_POSITIONS.length];
-      browser = await chromium.launch({
+      const launchOptions = {
         headless: false,
-        channel: 'chrome',
         args: [
           `--window-position=${pos.x},${pos.y}`,
           `--window-size=${BROWSER_WIDTH},${BROWSER_HEIGHT}`,
           "--disable-blink-features=AutomationControlled",
         ],
-      });
+      };
+
+      try {
+        browser = await chromium.launch({ ...launchOptions, channel: 'chrome' });
+      } catch (error: any) {
+        const message = String(error?.message || error || '');
+        if (!message.includes("Chromium distribution 'chrome' is not found")) {
+          throw error;
+        }
+        log(`[Worker ${workerId}] 시스템 Chrome 미발견 → 번들 Chromium으로 재시도`, "warn");
+        browser = await chromium.launch(launchOptions);
+      }
 
       // 모바일/웹 모드에 따라 context 설정
       context = await browser.newContext(USE_MOBILE_MODE ? MOBILE_CONTEXT : WEB_CONTEXT);
@@ -867,6 +1398,24 @@ async function runIndependentWorker(workerId: number, profile: Profile, onceMode
       const page = await context.newPage();
       page.setDefaultTimeout(60000);
       page.setDefaultNavigationTimeout(60000);
+
+      if (hasNaverLoginSource()) {
+        const loginResult = await loginToNaver(page, workerId);
+        if (!loginResult.ok) {
+          totalRuns++;
+          totalFailed++;
+          await updateSlotStats(work.slotSequence, false, 'LOGIN_FAILED');
+
+          const failMsg = `[실패] Worker${workerId} | slot_sequence=${work.slotSequence} | 사유=로그인실패 | ${productShort}...`;
+          log(failMsg, "warn");
+          console.log(failMsg);
+          log(`[Worker ${workerId}] FAIL(LOGIN_FAILED) | ${productShort}...`, "warn");
+          if (loginResult.reason) {
+            log(`[Worker ${workerId}] 로그인 사유: ${loginResult.reason}`, "warn");
+          }
+          continue;
+        }
+      }
 
       // 3. Patchright 엔진 실행
       const engineResult = await runPatchrightEngine(
@@ -897,6 +1446,7 @@ async function runIndependentWorker(workerId: number, profile: Profile, onceMode
         totalFailed++;
         const failReason = engineResult.failReason === 'CAPTCHA_UNSOLVED' ? 'CAPTCHA'
           : engineResult.failReason === 'IP_BLOCKED' ? 'IP차단'
+          : engineResult.failReason === 'LOGIN_FAILED' ? '로그인실패'
           : engineResult.failReason === 'NO_MID_MATCH' ? 'MID없음'
           : engineResult.failReason === 'TIMEOUT' ? '타임아웃'
           : (engineResult.error || 'Unknown');
@@ -911,6 +1461,8 @@ async function runIndependentWorker(workerId: number, profile: Profile, onceMode
           log(`[Worker ${workerId}] FAIL(CAPTCHA) | ${productShort}...`, "warn");
         } else if (engineResult.failReason === 'IP_BLOCKED') {
           log(`[Worker ${workerId}] FAIL(IP차단) | ${productShort}...`, "warn");
+        } else if (engineResult.failReason === 'LOGIN_FAILED') {
+          log(`[Worker ${workerId}] FAIL(LOGIN_FAILED) | ${productShort}...`, "warn");
         } else if (engineResult.failReason === 'NO_MID_MATCH') {
           log(`[Worker ${workerId}] FAIL(MID없음) | ${productShort}...`, "warn");
         } else if (engineResult.failReason === 'TIMEOUT') {
@@ -1026,6 +1578,16 @@ async function main() {
   // 프로필 로드
   const profile = loadProfile("pc_v7");
   log(`[Profile] ${profile.name}`);
+
+  const workbookAccountsPreview = getWorkbookAccounts();
+  if (workbookAccountsPreview.length > 0) {
+    log(`네이버 로그인 워크북 사용: ${NAVER_ACCOUNT_WORKBOOK} (row ${ACCOUNT_ROW_START}~${ACCOUNT_ROW_END}, ${workbookAccountsPreview.length}개)`);
+    log("네이버 로그인 계정 소스 우선순위: 워크북 > 환경변수");
+  } else if (NAVER_LOGIN_ID.length > 0 && NAVER_LOGIN_PW.length > 0 && !NAVER_LOGIN_DISABLED) {
+    log("네이버 로그인 환경변수 계정 사용");
+  } else {
+    log("네이버 로그인 비활성화: 워크북/환경변수 계정 모두 없음");
+  }
 
   // 현재 IP 확인 (Heartbeat/로그용)
   try {

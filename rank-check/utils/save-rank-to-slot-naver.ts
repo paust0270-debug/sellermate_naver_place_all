@@ -25,6 +25,7 @@ export interface KeywordRecord {
 export interface RankResult {
   productName: string;
   mid: string;
+  midSource?: string | null;
   totalRank: number;
   organicRank: number;
   page: number;
@@ -75,6 +76,8 @@ export async function saveRankToSlotNaver(
     const num = Number(val);
     return isNaN(num) ? null : num;
   };
+  const isMissingMidColumnError = (message: string) =>
+    /column\s+"?mid"?\s+does not exist/i.test(message) || /could not find the.*mid/i.test(message);
 
   try {
     // 순위 데이터 준비
@@ -91,6 +94,7 @@ export async function saveRankToSlotNaver(
       rankResult?.channelProductNo && String(rankResult.channelProductNo).trim()
         ? String(rankResult.channelProductNo).trim()
         : null;
+    const midSource = rankResult?.midSource ?? null;
 
     let slotRecord: any = null;
     const isRankNotFound = currentRank === -1;
@@ -153,38 +157,61 @@ export async function saveRankToSlotNaver(
     const now = new Date().toISOString();
 
     if (slotRecord) {
-      // ★ 순위권 밖(-1)이면 current_rank 업데이트 건너뛰기 (이전 순위 유지)
-      if (isRankNotFound) {
-        console.log(`   ⚠️ 순위권 밖(-1) - current_rank 유지, 히스토리만 저장`);
-        // UPDATE 건너뛰고 히스토리 저장으로 진행
+      // 순위권 밖(-1)이면 current_rank는 유지하고, mid/keyword/link_url만 갱신
+      const nextMid = mid ?? (typeof slotRecord.mid === 'string' && slotRecord.mid.trim() ? slotRecord.mid.trim() : null);
+      const updatePayload: Record<string, any> = {
+        mid: nextMid,
+        keyword: keyword.keyword,
+        link_url: keyword.link_url,
+        ...(catalogMid ? { catalog_mid: catalogMid } : {}),
+        ...(channelProductNo ? { channel_product_no: channelProductNo } : {}),
+        ...(rankResult?.tradeName ? { trade_name: String(rankResult.tradeName).trim() } : {}),
+        ...(rankResult?.keywordName ? { keyword_name: String(rankResult.keywordName).trim() } : {}),
+        updated_at: now,
+      };
+
+      if (!isRankNotFound) {
+        updatePayload.current_rank = currentRank;
+        updatePayload.start_rank = slotRecord.start_rank ?? currentRank;
       } else {
-        // UPDATE 기존 레코드 (셀러메이트 슬롯: current_rank/start_rank 등)
-        const { error: updateError } = await supabase
-          .from(TABLE_SLOT)
-          .update({
-            current_rank: currentRank,
-            start_rank: slotRecord.start_rank ?? currentRank,
-            keyword: keyword.keyword,
-            link_url: keyword.link_url,
-            ...(mid ? { mid } : {}),
-            ...(catalogMid ? { catalog_mid: catalogMid } : {}),
-            ...(channelProductNo ? { channel_product_no: channelProductNo } : {}),
-            ...(rankResult?.tradeName
-              ? { trade_name: String(rankResult.tradeName).trim() }
-              : {}),
-            ...(rankResult?.keywordName
-              ? { keyword_name: String(rankResult.keywordName).trim() }
-              : {}),
-            updated_at: now,
-          })
-          .eq('id', slotRecord.id);
-
-        if (updateError) {
-          throw new Error(`${TABLE_SLOT} UPDATE 실패: ${updateError.message}`);
-        }
-
-        console.log(`   💾 ${TABLE_SLOT} 업데이트: ID ${slotRecord.id}, 순위 ${currentRank}`);
+        console.log(`   ⚠️ 순위권 밖(-1) - current_rank 유지, mid/메타만 갱신`);
       }
+
+      const { error: updateError } = await supabase
+        .from(TABLE_SLOT)
+        .update(updatePayload)
+        .eq('id', slotRecord.id);
+
+      if (updateError) {
+        if (mid && isMissingMidColumnError(updateError.message)) {
+          console.warn(`   ⚠️ ${TABLE_SLOT}.mid 컬럼 없음 - mid 제외 후 재시도 필요`);
+          const fallbackPayload = { ...updatePayload };
+          delete fallbackPayload.mid;
+
+          const { error: fallbackUpdateError } = await supabase
+            .from(TABLE_SLOT)
+            .update(fallbackPayload)
+            .eq('id', slotRecord.id);
+
+          if (fallbackUpdateError) {
+            throw new Error(`${TABLE_SLOT} UPDATE 실패: ${fallbackUpdateError.message}`);
+          }
+
+          console.log(
+            `   💾 ${TABLE_SLOT} 업데이트: ID ${slotRecord.id}, 순위 ${isRankNotFound ? '유지' : currentRank}, mid 저장 스킵(컬럼 없음), source=${midSource || 'unknown'}`
+          );
+          return {
+            success: true,
+            slotNaverId: slotRecord.id,
+            action: slotRecord.id === keyword.slot_id ? 'updated' : 'created',
+          };
+        }
+        throw new Error(`${TABLE_SLOT} UPDATE 실패: ${updateError.message}`);
+      }
+
+      console.log(
+        `   💾 ${TABLE_SLOT} 업데이트: ID ${slotRecord.id}, 순위 ${isRankNotFound ? '유지' : currentRank}, mid=${nextMid || 'NULL'}${midSource ? `, source=${midSource}` : ''}`
+      );
     } else if (!isRankNotFound) {
       // ④ INSERT 신규 레코드 (셀러메이트 슬롯)
       const expiryDate = new Date();
@@ -212,11 +239,41 @@ export async function saveRankToSlotNaver(
         .single();
 
       if (insertError) {
-        throw new Error(`${TABLE_SLOT} INSERT 실패: ${insertError.message}`);
+        if (mid && isMissingMidColumnError(insertError.message)) {
+          console.warn(`   ⚠️ ${TABLE_SLOT}.mid 컬럼 없음 - mid 제외 후 재시도 필요`);
+          const { data: fallbackInsertedData, error: fallbackInsertError } = await supabase
+            .from(TABLE_SLOT)
+            .insert({
+              keyword: keyword.keyword,
+              link_url: keyword.link_url,
+              slot_type: keyword.slot_type || '네이버쇼핑',
+              slot_sequence: keyword.slot_sequence,
+              customer_id: keyword.customer_id || 'master',
+              customer_name: keyword.customer_name || '기본고객',
+              current_rank: currentRank,
+              start_rank: currentRank,
+              expiry_date: expiryDate.toISOString().split('T')[0],
+              created_at: now,
+              updated_at: now,
+            })
+            .select()
+            .single();
+
+          if (fallbackInsertError) {
+            throw new Error(`${TABLE_SLOT} INSERT 실패: ${fallbackInsertError.message}`);
+          }
+
+          slotRecord = fallbackInsertedData;
+          console.log(`   ✨ ${TABLE_SLOT} 신규 생성: ID ${slotRecord.id}, mid 저장 스킵(컬럼 없음)`);
+        } else {
+          throw new Error(`${TABLE_SLOT} INSERT 실패: ${insertError.message}`);
+        }
       }
 
-      slotRecord = insertedData;
-      console.log(`   ✨ ${TABLE_SLOT} 신규 생성: ID ${slotRecord.id}`);
+      if (!slotRecord) {
+        slotRecord = insertedData;
+        console.log(`   ✨ ${TABLE_SLOT} 신규 생성: ID ${slotRecord.id}${midSource ? `, source=${midSource}` : ''}`);
+      }
     }
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

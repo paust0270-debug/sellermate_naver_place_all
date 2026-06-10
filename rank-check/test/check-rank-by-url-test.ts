@@ -1,12 +1,12 @@
 #!/usr/bin/env npx tsx
 /**
- * URL 기반 순위 체크 CLI
+ * 테스트용 URL 기반 순위 체크 CLI
  *
  * 사용법:
- *   npx tsx rank-check/single/check-rank-by-url.ts <URL> <키워드> [maxPages]
+ *   npx tsx rank-check/test/check-rank-by-url-test.ts <URL> <키워드> [seedKeyword|maxPages] [maxPages]
  *
  * 예시:
- *   npx tsx rank-check/single/check-rank-by-url.ts \
+ *   npx tsx rank-check/test/check-rank-by-url-test.ts \
  *     "https://smartstore.naver.com/sgata/products/5671646899?NaPm=..." \
  *     "장난감" \
  *     15
@@ -21,9 +21,9 @@ async function main() {
   const args = process.argv.slice(2);
 
   if (args.length < 2) {
-    console.log("❌ 사용법: npx tsx rank-check/single/check-rank-by-url.ts <URL> <키워드> [maxPages]");
+    console.log("❌ 사용법: npx tsx rank-check/test/check-rank-by-url-test.ts <URL> <키워드> [maxPages]");
     console.log("\n예시:");
-    console.log('  npx tsx rank-check/single/check-rank-by-url.ts \\');
+    console.log('  npx tsx rank-check/test/check-rank-by-url-test.ts \\');
     console.log('    "https://smartstore.naver.com/sgata/products/5671646899?NaPm=..." \\');
     console.log('    "장난감" \\');
     console.log('    15');
@@ -32,17 +32,26 @@ async function main() {
 
   const productUrl = args[0];
   const keyword = args[1];
-  const maxPages = args[2] ? parseInt(args[2], 10) : 15;
+  const thirdArg = args[2];
+  const fourthArg = args[3];
+  const seedKeyword = thirdArg && Number.isNaN(Number(thirdArg)) ? thirdArg.trim() : undefined;
+  const maxPages = thirdArg && !Number.isNaN(Number(thirdArg))
+    ? parseInt(thirdArg, 10)
+    : fourthArg && !Number.isNaN(Number(fourthArg))
+      ? parseInt(fourthArg, 10)
+      : 15;
 
   console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-  console.log("URL 기반 순위 체크");
+  console.log("테스트용 URL 기반 순위 체크");
   console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
   console.log(`URL: ${productUrl}`);
   console.log(`키워드: ${keyword}`);
+  if (seedKeyword) {
+    console.log(`1차 검색어: ${seedKeyword}`);
+  }
   console.log(`최대 페이지: ${maxPages}`);
   console.log();
 
-  // 1. 브라우저 실행 (스마트스토어 URL은 브라우저가 필요)
   console.log("1️⃣ 브라우저 실행 중...");
   const { page, browser } = await connect({
     headless: false,
@@ -51,7 +60,6 @@ async function main() {
   });
 
   try {
-    // 2. URL에서 MID 추출
     console.log("\n2️⃣ URL에서 MID 추출 중...");
     const mid = extractMidFromUrl(productUrl);
     if (!mid) {
@@ -65,9 +73,8 @@ async function main() {
     }
     console.log(`✅ MID: ${mid}`);
 
-    // 3. 순위 체크
     console.log("\n3️⃣ 순위 체크 시작\n");
-    const result = await findAccurateRank(page as any, keyword, mid, maxPages);
+    const result = await findAccurateRank(page as any, keyword, mid, maxPages, { seedKeyword });
 
     console.log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     console.log("결과");
@@ -103,4 +110,7 @@ async function main() {
   }
 }
 
-main();
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

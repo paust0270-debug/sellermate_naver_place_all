@@ -64,7 +64,7 @@ function parseArgs() {
   return { workers, limit };
 }
 
-// slot_navertest에서 기존 MID 조회
+// slot_navertest에서 저장된 MID를 URL 기준으로 캐시
 async function getCachedMids(urls: string[]): Promise<Map<string, string>> {
   const midMap = new Map<string, string>();
 
@@ -82,8 +82,10 @@ async function getCachedMids(urls: string[]): Promise<Map<string, string>> {
   }
 
   for (const row of data || []) {
-    if (row.mid) {
-      midMap.set(row.link_url, row.mid);
+    const linkUrl = (row as any).link_url;
+    const mid = typeof (row as any).mid === 'string' ? (row as any).mid.trim() : '';
+    if (linkUrl && mid) {
+      midMap.set(linkUrl, mid);
     }
   }
 
@@ -158,7 +160,7 @@ async function processResult(
 
   // 순위 결과 처리
   if (result.rank && result.rank.totalRank > 0) {
-    console.log(`   ✅ 순위: ${result.rank.totalRank}위 (${result.rank.isAd ? '광고' : '오가닉'})`);
+    console.log(`   ✅ 순위: ${result.rank.totalRank}위 (${result.rank.isAd ? '광고' : '오가닉'}) | MID: ${result.mid || 'NULL'}${result.midSource ? ` (${result.midSource})` : ''}`);
     successCount++;
 
     // slot_navertest에 저장

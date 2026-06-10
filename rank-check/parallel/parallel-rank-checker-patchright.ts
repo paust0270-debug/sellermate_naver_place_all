@@ -60,9 +60,8 @@ export class ParallelRankCheckerPatchright {
     try {
       // Patchright: launchPersistentContext 사용
       const userDataDir = getWorkerProfilePath(index);
-      context = await chromium.launchPersistentContext(userDataDir, {
+      const persistentLaunchOptions = {
         headless: false,
-        channel: 'chrome',
         args: [
           '--window-size=1200,900',
           '--disable-blink-features=AutomationControlled',
@@ -72,7 +71,21 @@ export class ParallelRankCheckerPatchright {
         ],
         viewport: { width: 1180, height: 800 },
         locale: 'ko-KR',
-      });
+      };
+
+      try {
+        context = await chromium.launchPersistentContext(userDataDir, {
+          ...persistentLaunchOptions,
+          channel: 'chrome',
+        });
+      } catch (error: any) {
+        const message = String(error?.message || error || '');
+        if (!message.includes("Chromium distribution 'chrome' is not found")) {
+          throw error;
+        }
+        console.warn(`[${index + 1}] ⚠️ 시스템 Chrome 미발견 → 번들 Chromium으로 재시도`);
+        context = await chromium.launchPersistentContext(userDataDir, persistentLaunchOptions);
+      }
 
       const page = context.pages()[0] || await context.newPage();
 

@@ -19,3 +19,30 @@ dist/*.cmd
 dist/ipRotation.js
 dist/run-unified.js
 dist/bootstrap-launcher.cjs
+
+# Agent/tooling local state
+.omc/
+.omx/
+.playwright-mcp/
+
+# Run logs and stray launcher files
+*.log
+/cd
+/claude
+
+# Naver sessions / accounts (SECRETS — never commit)
+rank-check/test/naver-session*.json
+rank-check/test/login-able-accounts.json
+rank-check/test/strategy-a-mapping.json
+# Local login/scan experiments with hardcoded credentials (clean creds before tracking)
+rank-check/test/run-strategy-a-with-login.ts
+rank-check/test/scan-login-able-accounts.ts
+rank-check/test/strategy-a-test.ts
+
+# Account workbooks / bulk data (contains login credentials)
+총 취합*.xlsx
+총 취합*.txt
+
+# Third-party protection-bypass bundle (binaries, adb, account data)
+네이버 보호조치 해제플/
+네이버 보호조치 해제플.zip
