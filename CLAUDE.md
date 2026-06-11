@@ -7,6 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 npm install              # Install dependencies (first time)
 npm start                # Run unified orchestrator (run-unified.ts)
+npm run start:remote     # Remote watch launcher (rank-check/launcher/remote-watch-launcher.ts)
 
 # Run individual modules directly
 npx tsx rank-check/batch/check-batch-keywords.ts --limit=5
@@ -18,9 +19,12 @@ npx tsx rank-check/single/check-mid-rank-simple.ts "검색어" 85786220552
 
 # Browser test
 npx tsx rank-check/browser-test.ts
+
+# Typecheck (no build step is used at runtime — tsx runs TS directly)
+npx tsc --noEmit
 ```
 
-No dedicated test runner — test scripts live in `rank-check/test/` and are run directly with `npx tsx`.
+No dedicated test runner — test scripts live in `rank-check/test/` and are run directly with `npx tsx`. There is no transpile step in normal operation: `tsx` executes TypeScript on the fly. `npx tsc --noEmit` is the closest thing to a CI gate.
 
 ## Architecture
 
@@ -56,7 +60,7 @@ RETURNING *;
 
 - **`rank-check/`** — Naver Shopping rank checker. Uses dependency injection: `RankChecker` composes `INavigator`, `IProductCollector`, `ISecurityDetector`. Products are collected via `HybridProductCollector` (API + DOM fallback). MID extraction handles 5+ URL formats (`v_mid=`, `vMid=`, `product?p=`, `catalog/`, `products/`). Rank = `(page - 1) × 40 + position`.
 - **`place-check/`** — Naver Place rank checker. Clears cookies after each check to prevent session leakage.
-- **`coupang-check/`** — Coupang rank processor (`coupang-rank-processor.ts`, ~2200 lines). Also performs **cart traffic** (장바구니 담기): during rank check it adds the target product to cart as an engagement signal. **Currently browser-based** (patchright + system Chrome, non-logged-in, `coupang-rank-processor.ts:454–554`); **planned migration to a packet (HTTP) method.** Details → `BRIEFING-coupang-cart-traffic.md`, skill `coupang-cart-traffic`.
+- **`coupang-check/`** — Coupang rank processor (`coupang-rank-processor.ts`, ~2200 lines). Also performs **cart traffic** (장바구니 담기): during rank check it adds the target product to cart as an engagement signal. **Currently browser-based** (patchright + system Chrome, non-logged-in, `coupang-rank-processor.ts:454–554`); **migration in progress to a packet (HTTP) method** (`cart-traffic-runner.ts` + `cart-packet-lib.ts`). This directory has **its own `coupang-check/CLAUDE.md`** with the cart-traffic module map, Supabase table shapes, and add-cart payload details — read it before touching cart code. Wider context → `BRIEFING-coupang-cart-traffic.md`, skill `coupang-cart-traffic`.
 - **`shopping-traffic/`** — Traffic generation runner for Naver Shopping SEO.
 - **`ipRotation.ts`** — IP rotation via ADB (toggles mobile data) or network adapter disable/enable as fallback. Includes a recovery daemon that re-enables mobile data every 5 seconds.
 
@@ -110,3 +114,7 @@ Korean-language reports in the repo root explain the business logic:
 - `REPORT-프로그램-구동-로직.md` — Full execution logic
 - `REPORT-placerank-shoprank.md` — Service comparison
 - `BRIEFING-*.md` files — Feature briefs
+
+`coupang-check/CLAUDE.md` is a nested guide scoped to the Coupang cart-traffic work.
+
+`AGENTS.md` (repo root) is a near-duplicate of this file for Codex — keep the two in sync when editing shared guidance.
